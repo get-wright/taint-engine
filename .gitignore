@@ -5,3 +5,9 @@ __pycache__/
 .pytest_cache/
 dist/
 build/
+
+# Taint index
+.taint-index.db
+
+# Superpowers brainstorm artifacts
+.superpowers/
