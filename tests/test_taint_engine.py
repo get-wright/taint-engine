@@ -506,3 +506,122 @@ def test_keyword_arg_not_in_sink_vars():
     assert flow.source.variable != "timeout", (
         "keyword arg name 'timeout' should not be treated as a sink variable"
     )
+
+
+# --- Label detection and state checking ---
+
+
+def test_wrong_sanitizer_for_context():
+    """html.escape before SQL sink → sanitizer marked effective=False."""
+    flow = trace_taint_flow(
+        file_path=os.path.join(FIXTURES, "taint_labels_sample.py"),
+        function_name="wrong_sanitizer_for_context",
+        sink_line=10,
+        check_id="python.sqli",
+        cwe_list=["CWE-89"],
+        rules=RULES,
+        parser=PARSER,
+    )
+    assert flow is not None
+    assert flow.active_label == "sql"
+    assert len(flow.sanitizers) >= 1
+    san = flow.sanitizers[0]
+    assert san.name == "html.escape"
+    assert san.effective is False, (
+        f"html.escape should be ineffective for SQL sink, got effective={san.effective}"
+    )
+
+
+def test_sanitization_invalidated_by_transformer():
+    """html.escape then base64.b64decode before HTML sink → effective=False, invalidated_by set."""
+    flow = trace_taint_flow(
+        file_path=os.path.join(FIXTURES, "taint_labels_sample.py"),
+        function_name="sanitization_invalidated",
+        sink_line=16,
+        check_id="python.xss",
+        cwe_list=["CWE-79"],
+        rules=RULES,
+        parser=PARSER,
+    )
+    assert flow is not None
+    assert flow.active_label == "html"
+    assert len(flow.sanitizers) >= 1
+    san = flow.sanitizers[0]
+    assert san.name == "html.escape"
+    assert san.effective is False, (
+        f"html.escape should be invalidated by b64decode, got effective={san.effective}"
+    )
+    assert san.invalidated_by is not None
+    assert "base64.b64decode" in san.invalidated_by
+
+
+def test_correct_sanitization_effective():
+    """html.escape before HTML sink → sanitizer marked effective=True."""
+    flow = trace_taint_flow(
+        file_path=os.path.join(FIXTURES, "taint_labels_sample.py"),
+        function_name="correct_sanitization",
+        sink_line=21,
+        check_id="python.xss",
+        cwe_list=["CWE-79"],
+        rules=RULES,
+        parser=PARSER,
+    )
+    assert flow is not None
+    assert flow.active_label == "html"
+    assert len(flow.sanitizers) >= 1
+    san = flow.sanitizers[0]
+    assert san.name == "html.escape"
+    assert san.effective is True, (
+        f"html.escape should be effective for HTML sink, got effective={san.effective}"
+    )
+
+
+def test_no_label_all_sanitizers_count():
+    """Unknown sink → no label detected, all sanitizers stay effective."""
+    flow = trace_taint_flow(
+        file_path=os.path.join(FIXTURES, "taint_labels_sample.py"),
+        function_name="unknown_sink_all_sanitizers",
+        sink_line=26,
+        check_id="python.sqli",
+        cwe_list=["CWE-89"],
+        rules=RULES,
+        parser=PARSER,
+    )
+    assert flow is not None
+    assert flow.active_label is None
+    assert len(flow.sanitizers) >= 1
+    for san in flow.sanitizers:
+        assert san.effective is True, (
+            f"All sanitizers should be effective when no label, "
+            f"got {san.name} effective={san.effective}"
+        )
+
+
+def test_label_detection_sql():
+    """cursor.execute → label 'sql'."""
+    flow = trace_taint_flow(
+        file_path=os.path.join(FIXTURES, "taint_labels_sample.py"),
+        function_name="label_detection_sql",
+        sink_line=30,
+        check_id="python.sqli",
+        cwe_list=["CWE-89"],
+        rules=RULES,
+        parser=PARSER,
+    )
+    assert flow is not None
+    assert flow.active_label == "sql"
+
+
+def test_label_detection_ssrf():
+    """requests.get → label 'ssrf'."""
+    flow = trace_taint_flow(
+        file_path=os.path.join(FIXTURES, "taint_labels_sample.py"),
+        function_name="label_detection_ssrf",
+        sink_line=34,
+        check_id="python.ssrf",
+        cwe_list=["CWE-918"],
+        rules=RULES,
+        parser=PARSER,
+    )
+    assert flow is not None
+    assert flow.active_label == "ssrf"

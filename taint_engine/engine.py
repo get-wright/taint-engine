@@ -50,11 +50,14 @@ def trace_taint_flow(
     cwe_list: list[str],
     rules: TaintRuleSet,
     parser: object,
+    label: str | None = None,
 ) -> Optional[TaintFlow]:
     """Trace taint from sink back to source within a single function.
 
     Returns None if the language doesn't support taint tracing or
     the function can't be found.
+
+    *label* overrides automatic sink-label detection when provided.
     """
     ext = Path(file_path).suffix.lower()
     grammar = parser.get_grammar(ext)
@@ -92,19 +95,30 @@ def trace_taint_flow(
     if not sink_vars:
         # Couldn't identify sink variables — return minimal flow
         inferred = infer_sink_source(check_id, cwe_list, "")
-        return TaintFlow(
+        flow = TaintFlow(
             path=[FlowStep(variable="?", line=sink_line, expression="", kind="sink")],
             sanitizers=state.sanitizers,
             guards=state.guards,
             unresolved_calls=state.unresolved,
             confidence_factors=["Could not identify sink variables"],
             inferred=inferred,
+            transformers=state.transformers,
         )
+        _apply_label_analysis(flow, label, rules, ext)
+        return flow
+
+    # Detect label from sink identifier (CLI override takes precedence)
+    sink_id = next(
+        (sid for _, _, sid in sink_vars if sid is not None), None
+    )
+    active_label = label if label is not None else _detect_label(
+        sink_id, rules, ext
+    )
 
     # Trace backwards from each sink variable to find sources
     best_flow: Optional[TaintFlow] = None
 
-    for sink_var, sink_expr in sink_vars:
+    for sink_var, sink_expr, _sink_id in sink_vars:
         path_steps = _trace_back(
             sink_var, state.active, params, rules, ext, grammar, set()
         )
@@ -126,6 +140,7 @@ def trace_taint_flow(
                 unresolved_calls=state.unresolved,
                 confidence_factors=[],
                 inferred=infer_sink_source(check_id, cwe_list, sink_expr),
+                transformers=state.transformers,
             )
             # Prefer flows that actually found a source/parameter
             if best_flow is None or (
@@ -152,7 +167,11 @@ def trace_taint_flow(
                     unresolved_calls=state.unresolved,
                     confidence_factors=["No external source — values appear hardcoded"],
                     inferred=infer_sink_source(check_id, cwe_list, sink_expr),
+                    transformers=state.transformers,
                 )
+
+    if best_flow is not None:
+        _apply_label_analysis(best_flow, active_label, rules, ext)
 
     return best_flow
 
@@ -232,20 +251,20 @@ def _extract_parameters(func_node, grammar) -> list[str]:
 
 def _find_vars_at_line(
     func_node, sink_line: int, grammar, rules: TaintRuleSet, ext: str
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, str, str | None]]:
     """Find variables used at the sink line.
 
-    Returns list of (variable_name, expression_text) tuples.
-    Three passes:
-      1. Call arguments (range match for multi-line calls)
-      2. Return statements (exact line match)
-      3. Property sink assignments (e.g. el.innerHTML = x)
+    Returns list of (variable_name, expression_text, sink_identifier) tuples.
+    The sink_identifier is used for label detection:
+      - Pass 1: full callee name of the call
+      - Pass 2: None (return statements)
+      - Pass 3: property name from member access
     """
     call_types = set(grammar.call_types)
     member_types = set(grammar.member_access_types)
     return_types = set(grammar.return_types)
     assignment_types = set(grammar.assignment_types)
-    results: list[tuple[str, str]] = []
+    results: list[tuple[str, str, str | None]] = []
     seen: set[str] = set()
 
     # Pass 1: Call arguments — range match for multi-line calls.
@@ -272,6 +291,7 @@ def _find_vars_at_line(
         if not args_node:
             continue
 
+        callee = get_full_callee(node)
         expr_text = node.text.decode()
         for arg_child in walk_tree(args_node):
             if arg_child.type == "identifier":
@@ -285,13 +305,13 @@ def _find_vars_at_line(
                 name = arg_child.text.decode()
                 if name not in seen:
                     seen.add(name)
-                    results.append((name, expr_text))
+                    results.append((name, expr_text, callee or None))
             elif arg_child.type in member_types:
                 # Reconstruct dotted name: obj.field
                 dotted = _reconstruct_dotted(arg_child)
                 if dotted and dotted not in seen:
                     seen.add(dotted)
-                    results.append((dotted, expr_text))
+                    results.append((dotted, expr_text, callee or None))
 
     if results:
         return results
@@ -312,7 +332,7 @@ def _find_vars_at_line(
                 name = child.text.decode()
                 if name not in seen:
                     seen.add(name)
-                    results.append((name, expr_text))
+                    results.append((name, expr_text, None))
 
     if results:
         return results
@@ -341,7 +361,7 @@ def _find_vars_at_line(
                     name = child.text.decode()
                     if name not in seen:
                         seen.add(name)
-                        results.append((name, expr_text))
+                        results.append((name, expr_text, prop_name))
 
     # Pass 3b: Also check expression_statements wrapping property assignments
     if not results:
@@ -365,7 +385,9 @@ def _find_vars_at_line(
                                 name = rch.text.decode()
                                 if name not in seen:
                                     seen.add(name)
-                                    results.append((name, expr_text))
+                                    results.append(
+                                        (name, expr_text, prop_name)
+                                    )
 
     return results
 
@@ -377,6 +399,90 @@ def _reconstruct_dotted(member_node) -> str:
     if obj and prop:
         return f"{obj}.{prop}"
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Label detection and state-checking
+# ---------------------------------------------------------------------------
+
+
+def _detect_label(
+    sink_identifier: str | None, rules: TaintRuleSet, ext: str,
+) -> str | None:
+    """Detect the taint label from the sink identifier using labeled_sinks rules."""
+    if sink_identifier is None:
+        return None
+    lang_rules = rules.for_extension(ext)
+    if lang_rules is None or lang_rules.labeled_sinks is None:
+        return None
+    for label, sink_def in lang_rules.labeled_sinks.items():
+        all_names = sink_def.get("call", []) + sink_def.get("property", [])
+        for sink_name in all_names:
+            if sink_name in sink_identifier or sink_identifier.endswith(
+                sink_name
+            ):
+                return label
+    return None
+
+
+def _apply_label_analysis(
+    flow: TaintFlow,
+    active_label: str | None,
+    rules: TaintRuleSet,
+    ext: str,
+) -> None:
+    """Post-process a flow: label matching + state acceptance checking.
+
+    Mutates *flow* in place — sets ``active_label``, ``final_state``, and
+    may flip ``effective`` / ``invalidated_by`` on individual sanitizers.
+    """
+    flow.active_label = active_label
+    if active_label is None:
+        return
+
+    # Check 1 — label matching: sanitizer must remove the active label
+    for san in flow.sanitizers:
+        if active_label not in san.removes and "*" not in san.removes:
+            san.effective = False
+
+    # Check 2 — state acceptance
+    accepted_states = rules.get_accepted_states(ext, active_label)
+    if accepted_states is None:
+        return
+
+    state_ops: list[tuple[int, int, str, str]] = []
+    for san in flow.sanitizers:
+        if san.sets_state:
+            state_ops.append(
+                (san.line, san.discovery_order, san.sets_state, san.name)
+            )
+    for tfm in flow.transformers:
+        state_ops.append(
+            (tfm.line, tfm.discovery_order, tfm.sets_state, tfm.name)
+        )
+    state_ops.sort()
+
+    last_state = "raw"
+    last_state_setter: str | None = None
+    path_lines = {step.line for step in flow.path}
+
+    for line, _order, sets_state, name in state_ops:
+        if line in path_lines:
+            last_state = sets_state
+            last_state_setter = name
+
+    flow.final_state = last_state
+
+    if last_state in accepted_states:
+        return
+
+    for san in flow.sanitizers:
+        if san.effective:
+            if last_state_setter and last_state_setter != san.name:
+                san.effective = False
+                san.invalidated_by = (
+                    f"{last_state_setter} (state: {last_state})"
+                )
 
 
 # ---------------------------------------------------------------------------
