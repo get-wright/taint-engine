@@ -1,0 +1,37 @@
+{
+  "language": "python",
+  "extensions": [".py"],
+  "sources": [
+    "request.args", "request.form", "request.json", "request.data",
+    "os.environ", "sys.argv", "input()",
+    "request.GET", "request.POST"
+  ],
+  "sinks": {
+    "call": [
+      "eval", "exec", "compile",
+      "cursor.execute", "db.execute", "conn.execute",
+      "subprocess.run", "subprocess.call", "subprocess.Popen",
+      "os.system", "os.popen",
+      "open"
+    ],
+    "property": ["data", "content"]
+  },
+  "sanitizers": [
+    { "name": "html.escape", "neutralizes": ["CWE-79"] },
+    { "name": "markupsafe.escape", "neutralizes": ["CWE-79"] },
+    { "name": "bleach.clean", "neutralizes": ["CWE-79"] },
+    { "name": "cgi.escape", "neutralizes": ["CWE-79"] },
+    { "name": "escape", "neutralizes": ["CWE-79"] },
+    { "name": "strip_tags", "neutralizes": ["CWE-79"] },
+    { "name": "shlex.quote", "neutralizes": ["CWE-78"] },
+    { "name": "os.path.basename", "neutralizes": ["CWE-22"] },
+    { "name": "os.path.normpath", "neutralizes": ["CWE-22"] },
+    { "name": "parameterize", "neutralizes": ["CWE-89"] },
+    { "name": "sanitize_sql", "neutralizes": ["CWE-89"] },
+    { "name": "int", "neutralizes": ["CWE-89", "CWE-79"] },
+    { "name": "float", "neutralizes": ["CWE-89", "CWE-79"] }
+  ],
+  "guards": [
+    "re.match", "re.fullmatch", "isinstance", "hasattr"
+  ]
+}

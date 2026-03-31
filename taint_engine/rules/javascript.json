@@ -1,0 +1,39 @@
+{
+  "language": "javascript",
+  "extensions": [".js", ".jsx", ".ts", ".tsx"],
+  "sources": [
+    "req.body", "req.query", "req.params", "req.headers",
+    "document.location", "window.location",
+    "process.env"
+  ],
+  "sinks": {
+    "call": [
+      "eval", "setTimeout", "setInterval",
+      "document.write", "document.writeln",
+      "fetch", "XMLHttpRequest"
+    ],
+    "property": [
+      "innerHTML", "outerHTML", "srcdoc",
+      "src", "href", "action", "formAction",
+      "onclick", "onerror", "onload", "onmouseover",
+      "onfocus", "onblur", "onsubmit", "onchange",
+      "onkeydown", "onkeyup", "onkeypress",
+      "cssText", "data", "codebase", "location"
+    ]
+  },
+  "sanitizers": [
+    { "name": "escapeHtml", "neutralizes": ["CWE-79"] },
+    { "name": "encodeURI", "neutralizes": ["CWE-79"] },
+    { "name": "encodeURIComponent", "neutralizes": ["CWE-79"] },
+    { "name": "DOMPurify.sanitize", "neutralizes": ["CWE-79"] },
+    { "name": "parseInt", "neutralizes": ["CWE-89", "CWE-79"] },
+    { "name": "parseFloat", "neutralizes": ["CWE-89", "CWE-79"] },
+    { "name": "sanitize", "neutralizes": ["CWE-79"] },
+    { "name": "htmlspecialchars", "neutralizes": ["CWE-79"] },
+    { "name": "xss_clean", "neutralizes": ["CWE-79"] }
+  ],
+  "guards": [
+    "typeof", "instanceof", "Number.isFinite", "Number.isInteger",
+    "Array.isArray", "validator.isEmail", "validator.isURL"
+  ]
+}

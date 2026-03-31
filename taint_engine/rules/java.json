@@ -1,0 +1,29 @@
+{
+  "language": "java",
+  "extensions": [".java"],
+  "sources": [
+    "request.getParameter", "request.getAttribute",
+    "request.getHeader", "request.getQueryString",
+    "System.getenv", "System.getProperty"
+  ],
+  "sinks": {
+    "call": [
+      "Runtime.exec", "ProcessBuilder",
+      "Statement.execute", "Statement.executeQuery",
+      "PreparedStatement.execute",
+      "response.getWriter", "response.sendRedirect",
+      "RequestDispatcher.forward"
+    ],
+    "property": []
+  },
+  "sanitizers": [
+    { "name": "StringEscapeUtils.escapeHtml4", "neutralizes": ["CWE-79"] },
+    { "name": "HtmlUtils.htmlEscape", "neutralizes": ["CWE-79"] },
+    { "name": "Encoder.encodeForHTML", "neutralizes": ["CWE-79"] },
+    { "name": "PreparedStatement.setString", "neutralizes": ["CWE-89"] },
+    { "name": "Integer.parseInt", "neutralizes": ["CWE-89", "CWE-79"] }
+  ],
+  "guards": [
+    "Pattern.matches", "instanceof"
+  ]
+}

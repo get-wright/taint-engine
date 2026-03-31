@@ -1,0 +1,32 @@
+{
+  "language": "php",
+  "extensions": [".php"],
+  "sources": [
+    "$_GET", "$_POST", "$_REQUEST", "$_COOKIE",
+    "$_SERVER", "$_FILES"
+  ],
+  "sinks": {
+    "call": [
+      "echo", "print", "eval",
+      "exec", "system", "passthru", "shell_exec",
+      "mysqli_query", "pg_query",
+      "include", "require", "include_once", "require_once",
+      "header", "file_get_contents", "file_put_contents"
+    ],
+    "property": []
+  },
+  "sanitizers": [
+    { "name": "htmlspecialchars", "neutralizes": ["CWE-79"] },
+    { "name": "htmlentities", "neutralizes": ["CWE-79"] },
+    { "name": "strip_tags", "neutralizes": ["CWE-79"] },
+    { "name": "escapeshellarg", "neutralizes": ["CWE-78"] },
+    { "name": "escapeshellcmd", "neutralizes": ["CWE-78"] },
+    { "name": "mysql_real_escape_string", "neutralizes": ["CWE-89"] },
+    { "name": "intval", "neutralizes": ["CWE-89", "CWE-79"] },
+    { "name": "realpath", "neutralizes": ["CWE-22"] },
+    { "name": "basename", "neutralizes": ["CWE-22"] }
+  ],
+  "guards": [
+    "is_numeric", "ctype_alnum", "preg_match", "filter_var"
+  ]
+}

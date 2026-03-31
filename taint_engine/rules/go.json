@@ -1,0 +1,28 @@
+{
+  "language": "go",
+  "extensions": [".go"],
+  "sources": [
+    "r.URL.Query", "r.FormValue", "r.Body",
+    "os.Getenv", "os.Args"
+  ],
+  "sinks": {
+    "call": [
+      "fmt.Fprintf", "fmt.Sprintf",
+      "http.Redirect",
+      "exec.Command",
+      "db.Query", "db.Exec", "db.QueryRow",
+      "template.HTML"
+    ],
+    "property": []
+  },
+  "sanitizers": [
+    { "name": "html.EscapeString", "neutralizes": ["CWE-79"] },
+    { "name": "url.QueryEscape", "neutralizes": ["CWE-79"] },
+    { "name": "filepath.Clean", "neutralizes": ["CWE-22"] },
+    { "name": "filepath.Base", "neutralizes": ["CWE-22"] },
+    { "name": "strconv.Atoi", "neutralizes": ["CWE-89", "CWE-79"] }
+  ],
+  "guards": [
+    "regexp.MatchString", "regexp.MustCompile"
+  ]
+}
