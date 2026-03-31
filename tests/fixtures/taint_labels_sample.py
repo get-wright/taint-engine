@@ -32,3 +32,22 @@ def label_detection_sql(user_input):
 
 def label_detection_ssrf(url):
     requests.get(url)
+
+
+def try_except_flow(user_input):
+    try:
+        result = process(user_input)
+    except Exception as e:
+        cursor.execute(user_input)
+
+
+def with_statement_flow(user_path):
+    with open(user_path) as fh:
+        content = fh.read()
+    cursor.execute(content)
+
+
+def augmented_assignment_flow(a, b):
+    x = a
+    x += b
+    cursor.execute(x)

@@ -625,3 +625,60 @@ def test_label_detection_ssrf():
     )
     assert flow is not None
     assert flow.active_label == "ssrf"
+
+
+# --- Control-flow edge cases with labels ---
+
+
+def test_try_except_flow():
+    """Taint traces through except handler to cursor.execute sink."""
+    flow = trace_taint_flow(
+        file_path=os.path.join(FIXTURES, "taint_labels_sample.py"),
+        function_name="try_except_flow",
+        sink_line=41,
+        check_id="python.sqli",
+        cwe_list=["CWE-89"],
+        rules=RULES,
+        parser=PARSER,
+    )
+    assert flow is not None
+    assert flow.active_label == "sql"
+    assert flow.source.kind in ("parameter", "source")
+    assert flow.sink.kind == "sink"
+
+
+def test_with_statement_flow():
+    """Taint propagates through with-statement binding to cursor.execute."""
+    flow = trace_taint_flow(
+        file_path=os.path.join(FIXTURES, "taint_labels_sample.py"),
+        function_name="with_statement_flow",
+        sink_line=47,
+        check_id="python.sqli",
+        cwe_list=["CWE-89"],
+        rules=RULES,
+        parser=PARSER,
+    )
+    assert flow is not None
+    assert flow.active_label == "sql"
+    assert flow.source.kind in ("parameter", "source")
+    assert flow.sink.kind == "sink"
+
+
+def test_augmented_assignment_flow():
+    """x += b propagates taint from both a and b to cursor.execute."""
+    flow = trace_taint_flow(
+        file_path=os.path.join(FIXTURES, "taint_labels_sample.py"),
+        function_name="augmented_assignment_flow",
+        sink_line=53,
+        check_id="python.sqli",
+        cwe_list=["CWE-89"],
+        rules=RULES,
+        parser=PARSER,
+    )
+    assert flow is not None
+    assert flow.active_label == "sql"
+    assert flow.source.kind in ("parameter", "source")
+    assert flow.sink.kind == "sink"
+    assert len(flow.path) >= 3, (
+        f"Expected >=3 steps (param->assignment->sink), got {len(flow.path)}"
+    )
