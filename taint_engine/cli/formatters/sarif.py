@@ -7,7 +7,20 @@ from __future__ import annotations
 
 import json
 
-from ...models import TaintFlow
+from ...models import SanitizerInfo, TaintFlow
+
+
+def _sanitizer_message(san: SanitizerInfo) -> str:
+    """Build a human-readable sanitizer message including effectiveness."""
+    if san.effective:
+        state_suffix = f", state: {san.sets_state}" if san.sets_state else ""
+        return f"sanitizer: {san.name} (effective{state_suffix})"
+    if san.invalidated_by:
+        return (
+            f"sanitizer: {san.name} (INEFFECTIVE"
+            f" \u2014 state changed to '{san.invalidated_by}')"
+        )
+    return f"sanitizer: {san.name} (INEFFECTIVE)"
 
 
 def format_sarif(flows: list[TaintFlow], *, file_path: str) -> str:
@@ -30,7 +43,10 @@ def format_sarif(flows: list[TaintFlow], *, file_path: str) -> str:
             "ruleId": flow.inferred.sink_type if flow.inferred else "unknown",
             "level": "warning",
             "message": {
-                "text": f"Taint flow from {flow.source.expression} to {flow.sink.expression}",
+                "text": (
+                    f"Taint flow from {flow.source.expression}"
+                    f" to {flow.sink.expression}"
+                ),
             },
             "locations": [
                 {
@@ -57,7 +73,7 @@ def format_sarif(flows: list[TaintFlow], *, file_path: str) -> str:
                     "artifactLocation": {"uri": file_path},
                     "region": {"startLine": san.line},
                 },
-                "message": {"text": f"sanitizer: {san.name}"},
+                "message": {"text": _sanitizer_message(san)},
             })
         for guard in flow.guards:
             related.append({
@@ -70,6 +86,16 @@ def format_sarif(flows: list[TaintFlow], *, file_path: str) -> str:
             })
         if related:
             result["relatedLocations"] = related
+
+        props: dict = {}
+        if flow.active_label is not None:
+            props["active_label"] = flow.active_label
+        if flow.final_state is not None:
+            props["final_state"] = flow.final_state
+        if flow.transformers:
+            props["transformers"] = [t.to_dict() for t in flow.transformers]
+        if props:
+            result["properties"] = props
 
         results.append(result)
 

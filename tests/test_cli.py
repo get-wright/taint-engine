@@ -79,6 +79,19 @@ class TestTraceCommand:
         data = json.loads(result.stdout)
         assert data["version"] == "2.1.0"
 
+    def test_trace_with_label(self):
+        """The --label flag is accepted and passed through to trace_taint_flow."""
+        result = run_cli("trace", f"{SAMPLE_PY}:8", "--label", "sql")
+        assert result.returncode == 0
+
+    def test_trace_label_json_output(self):
+        result = run_cli(
+            "trace", f"{SAMPLE_PY}:8", "--format", "json", "--label", "sql",
+        )
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert "file" in data
+
     def test_trace_invalid_format(self):
         result = run_cli("trace", f"{SAMPLE_PY}:8", "--format", "xml")
         assert result.returncode != 0

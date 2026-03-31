@@ -64,6 +64,7 @@ def _augment_cross_file(
     check_id: str,
     cwe_list: list[str],
     args,
+    label: str | None = None,
     depth: int = 0,
     visited: set[tuple[str, str]] | None = None,
 ) -> TaintFlow:
@@ -94,6 +95,7 @@ def _augment_cross_file(
             cwe_list=cwe_list,
             rules=rules,
             parser=parser,
+            label=label,
         )
 
         child_resolver = _resolver_for_file(resolved.file_path, args)
@@ -108,6 +110,7 @@ def _augment_cross_file(
                 check_id=check_id,
                 cwe_list=cwe_list,
                 args=args,
+                label=label,
                 depth=depth + 1,
                 visited=visited,
             )
@@ -130,6 +133,9 @@ def _augment_cross_file(
         confidence_factors=flow.confidence_factors,
         inferred=flow.inferred,
         guards=flow.guards,
+        active_label=flow.active_label,
+        transformers=flow.transformers,
+        final_state=flow.final_state,
     )
 
 
@@ -190,6 +196,8 @@ def run_trace(args) -> int:
 
     from .. import trace_taint_flow
 
+    label = getattr(args, "label", None)
+
     flows: list[TaintFlow] = []
     for _sym in target_symbols:
         flow = trace_taint_flow(
@@ -200,6 +208,7 @@ def run_trace(args) -> int:
             cwe_list=cwe_list,
             rules=rules,
             parser=parser,
+            label=label,
         )
         if flow is not None:
             flows.append(flow)
@@ -220,6 +229,7 @@ def run_trace(args) -> int:
                     check_id=check_id,
                     cwe_list=cwe_list,
                     args=args,
+                    label=label,
                 )
         finally:
             store.close()

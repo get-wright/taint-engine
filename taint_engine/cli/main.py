@@ -54,6 +54,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Additional Python search paths (comma-separated)",
     )
+    trc.add_argument(
+        "--label",
+        default=None,
+        help="Taint label for sink-type matching (e.g., sql, html, url)",
+    )
 
     return parser
 
