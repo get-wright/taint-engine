@@ -155,9 +155,7 @@ Example: `html.escape` → `json.dumps` → HTML sink.
     { "name": "codecs.decode",             "sets_state": "raw" },
     { "name": "codecs.encode",             "sets_state": "encoded" },
     { "name": "json.loads",                "sets_state": "parsed-object" },
-    { "name": "json.dumps",               "sets_state": "json-string" },
-    { "name": "str",                       "sets_state": "raw" },
-    { "name": "bytes.decode",              "sets_state": "raw" }
+    { "name": "json.dumps",               "sets_state": "json-string" }
   ],
 
   "guards": ["re.match", "re.fullmatch", "isinstance", "hasattr", "urlsplit"]
@@ -185,7 +183,8 @@ Example: `html.escape` → `json.dumps` → HTML sink.
 
 | Old format | Interpretation |
 |---|---|
-| `"sources"` is a `list[str]` | Each source emits all labels |
+| `"sources"` is a `list[str]` | Used as-is (flat source set) |
+| `"sources"` is a `dict[str, list]` (new format) | Keys are extracted as the flat source set; label values are stored but reserved for future use |
 | `"sinks"` has flat `"call"` / `"property"` keys | Populate `call_sinks` / `property_sinks` as before; label detection returns `None`; no state checking |
 | Sanitizer has `"neutralizes"` but no `"removes"` or `"sets_state"` | Treated as removing all labels, setting state `"sanitized"` (universal) |
 | No `"transformers"` key | No state transitions — existing behavior |
@@ -238,23 +237,28 @@ function check_flow_state(flow, active_label, rules, ext):
     if accepted_states is None:
         return  # no state checking for this sink
 
-    # Find the last state-setting operation in the path
+    # Merge all state-setting operations into one sorted list.
+    # Each entry: (line, discovery_order, sets_state, name)
+    # discovery_order comes from the walker's DFS traversal, which processes
+    # inner expressions before outer ones on the same line.
+    state_ops = []
+    for i, san in enumerate(flow.sanitizers):
+        if san.sets_state:
+            state_ops.append((san.line, san.discovery_order, san.sets_state, san.name))
+    for i, tfm in enumerate(flow.transformers):
+        state_ops.append((tfm.line, tfm.discovery_order, tfm.sets_state, tfm.name))
+    state_ops.sort()  # by (line, discovery_order)
+
+    # Walk in order to find the last state
     last_state = "raw"  # default: untransformed user input
     last_state_setter = None
 
-    # Walk path in source→sink order
-    for step in flow.path:
-        # Check if this step contains a sanitizer
-        for san in flow.sanitizers:
-            if san.line == step.line and san.sets_state:
-                last_state = san.sets_state
-                last_state_setter = san.name
-
-        # Check if this step contains a transformer
-        for tfm in flow.transformers:
-            if tfm.line == step.line:
-                last_state = tfm.sets_state
-                last_state_setter = tfm.name
+    for line, order, sets_state, name in state_ops:
+        # Only consider operations on lines within the trace path
+        path_lines = {step.line for step in flow.path}
+        if line in path_lines:
+            last_state = sets_state
+            last_state_setter = name
 
     flow.final_state = last_state
 
@@ -271,6 +275,11 @@ function check_flow_state(flow, active_label, rules, ext):
                     san.invalidated_by = f"{last_state_setter} (state: {last_state})"
 ```
 
+Note: `discovery_order` is an integer assigned by the walker during DFS traversal.
+The walker processes inner expressions before outer ones (e.g., in
+`int(base64.b64decode(x))`, `b64decode` is visited before `int`). This ensures
+correct ordering when a sanitizer and transformer appear on the same line.
+
 ### CLI override
 
 `taint-trace trace file.py:42 --label sql` forces the active label, bypassing
@@ -284,15 +293,14 @@ auto-detection.
 @dataclass(frozen=True)
 class LanguageRules:
     language: str
-    sources: frozenset[str]                           # flat set (backward compat)
-    labeled_sources: dict[str, list[str]] | None      # source → label list
+    sources: frozenset[str]                           # flat set (backward compat + new format flattened)
     call_sinks: frozenset[str]                        # flattened for Pass 1
     property_sinks: frozenset[str]                    # flattened for Pass 3
-    labeled_sinks: dict[str, dict] | None             # label → {call, property, accepts}
+    labeled_sinks: MappingProxyType[str, dict] | None  # label → {call, property, accepts}
     sanitizers: MappingProxyType[str, list[str]]       # existing (name → CWE list)
-    sanitizer_labels: dict[str, list[str]] | None     # sanitizer name → removes labels
-    sanitizer_states: dict[str, str] | None           # sanitizer name → sets_state
-    transformers: dict[str, str] | None               # transformer name → sets_state
+    sanitizer_labels: MappingProxyType[str, list[str]] | None  # sanitizer name → removes labels
+    sanitizer_states: MappingProxyType[str, str] | None        # sanitizer name → sets_state
+    transformers: MappingProxyType[str, str] | None            # transformer name → sets_state
     guards: frozenset[str]
 ```
 
@@ -308,22 +316,28 @@ preserves backward compatibility — `_find_vars_at_line()` Pass 3 still calls
 class SanitizerInfo:
     name: str
     line: int
-    cwe_categories: list[str]       # kept for backward compat
-    removes: list[str]              # NEW: taint labels this sanitizer addresses
-    sets_state: str | None          # NEW: data representation after this sanitizer
+    cwe_categories: list[str]                    # kept for backward compat
     conditional: bool
     verified: bool
-    effective: bool = True          # NEW: False if wrong label or state not accepted
-    invalidated_by: str | None = None  # NEW: transformer/sanitizer that overwrote state
+    removes: list[str] = field(default_factory=lambda: ["*"])  # NEW: taint labels
+    sets_state: str | None = "sanitized"         # NEW: data representation
+    discovery_order: int = 0                     # NEW: walker DFS order (for same-line sorting)
+    effective: bool = True                       # NEW: False if wrong label or state not accepted
+    invalidated_by: str | None = None            # NEW: what overwrote state
 ```
 
-`removes` defaults to `["*"]` and `sets_state` defaults to `"sanitized"` when
-old rule format is used.
+Default values ensure backward compatibility — existing `SanitizerInfo(...)` calls
+that don't pass `removes`/`sets_state` get universal behavior (`["*"]`, `"sanitized"`).
+
+For new-format rules (those with `removes`/`sets_state`), `cwe_categories` is
+populated with `["*"]` since label-based matching supersedes CWE-based filtering.
+The field is retained for output format compatibility.
 
 `from_dict()` handles missing keys:
 ```python
 removes=d.get("removes", ["*"]),
-sets_state=d.get("sets_state"),
+sets_state=d.get("sets_state", "sanitized"),
+discovery_order=d.get("discovery_order", 0),
 effective=d.get("effective", True),
 invalidated_by=d.get("invalidated_by"),
 ```
@@ -336,7 +350,8 @@ class TransformerInfo:
     """A function call that changes data representation without sanitizing."""
     name: str
     line: int
-    sets_state: str   # data representation after this call
+    sets_state: str        # data representation after this call
+    discovery_order: int = 0  # walker DFS order (for same-line sorting)
 ```
 
 ### 4. `TaintFlow` — new fields
@@ -579,6 +594,10 @@ Forces `active_label = "sql"` regardless of sink expression.
 - **State is a single value, not a set.** Each operation overwrites the previous
   state. This is sufficient for the backward trace post-processing model but less
   expressive than CodeQL's full flow-state-set approach.
+
+- **Return-statement sinks skip label detection.** When `_find_vars_at_line()`
+  matches a return statement (Pass 2), the sink identifier is `None`, bypassing
+  label detection and state checking. Use `--label` CLI override for these cases.
 
 - **`str()` and similar "neutral" calls.** Some functions (like `str()`) technically
   change representation but don't affect safety. These should NOT be listed as
