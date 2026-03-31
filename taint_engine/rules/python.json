@@ -1,37 +1,72 @@
 {
   "language": "python",
   "extensions": [".py"],
-  "sources": [
-    "request.args", "request.form", "request.json", "request.data",
-    "os.environ", "sys.argv", "input()",
-    "request.GET", "request.POST"
-  ],
+  "sources": {
+    "request.args":      ["html", "sql", "shell", "ssrf", "redirect"],
+    "request.form":      ["html", "sql", "shell", "ssrf"],
+    "request.get_json":  ["html", "sql", "shell", "ssrf"],
+    "request.data":      ["html", "sql", "shell", "ssrf"],
+    "os.environ":        ["path", "shell"],
+    "sys.argv":          ["path", "shell", "eval"],
+    "input()":           ["html", "sql", "shell", "ssrf", "path", "eval"],
+    "request.GET":       ["html", "sql", "shell", "ssrf", "redirect"],
+    "request.POST":      ["html", "sql", "shell", "ssrf"]
+  },
   "sinks": {
-    "call": [
-      "eval", "exec", "compile",
-      "cursor.execute", "db.execute", "conn.execute",
-      "subprocess.run", "subprocess.call", "subprocess.Popen",
-      "os.system", "os.popen",
-      "open"
-    ],
-    "property": ["data", "content"]
+    "html": {
+      "call":     ["document.write", "response.write"],
+      "property": ["innerHTML", "outerHTML"],
+      "accepts":  ["html-encoded", "int", "float", "stripped"]
+    },
+    "sql": {
+      "call":     ["cursor.execute", "db.execute", "conn.execute"],
+      "accepts":  ["parameterized", "int", "float"]
+    },
+    "shell": {
+      "call":     ["os.system", "subprocess.run", "subprocess.call", "subprocess.Popen", "os.popen"],
+      "accepts":  ["shell-quoted", "int", "float"]
+    },
+    "ssrf": {
+      "call":     ["requests.get", "requests.post", "requests.put", "urllib.request.urlopen"],
+      "accepts":  ["validated-url", "int"]
+    },
+    "redirect": {
+      "call":     ["redirect", "HttpResponseRedirect"],
+      "accepts":  ["validated-url", "relative-path"]
+    },
+    "path": {
+      "call":     ["open", "os.path.join"],
+      "accepts":  ["normalized-path", "basename-only"]
+    },
+    "eval": {
+      "call":     ["eval", "exec", "compile"],
+      "accepts":  []
+    }
   },
   "sanitizers": [
-    { "name": "html.escape", "neutralizes": ["CWE-79"] },
-    { "name": "markupsafe.escape", "neutralizes": ["CWE-79"] },
-    { "name": "bleach.clean", "neutralizes": ["CWE-79"] },
-    { "name": "cgi.escape", "neutralizes": ["CWE-79"] },
-    { "name": "escape", "neutralizes": ["CWE-79"] },
-    { "name": "strip_tags", "neutralizes": ["CWE-79"] },
-    { "name": "shlex.quote", "neutralizes": ["CWE-78"] },
-    { "name": "os.path.basename", "neutralizes": ["CWE-22"] },
-    { "name": "os.path.normpath", "neutralizes": ["CWE-22"] },
-    { "name": "parameterize", "neutralizes": ["CWE-89"] },
-    { "name": "sanitize_sql", "neutralizes": ["CWE-89"] },
-    { "name": "int", "neutralizes": ["CWE-89", "CWE-79"] },
-    { "name": "float", "neutralizes": ["CWE-89", "CWE-79"] }
+    { "name": "html.escape",       "removes": ["html"], "sets_state": "html-encoded" },
+    { "name": "markupsafe.escape",  "removes": ["html"], "sets_state": "html-encoded" },
+    { "name": "bleach.clean",       "removes": ["html"], "sets_state": "html-encoded" },
+    { "name": "cgi.escape",         "removes": ["html"], "sets_state": "html-encoded" },
+    { "name": "strip_tags",         "removes": ["html"], "sets_state": "stripped" },
+    { "name": "shlex.quote",        "removes": ["shell"], "sets_state": "shell-quoted" },
+    { "name": "os.path.basename",   "removes": ["path"], "sets_state": "basename-only" },
+    { "name": "os.path.normpath",   "removes": ["path"], "sets_state": "normalized-path" },
+    { "name": "parameterize",       "removes": ["sql"], "sets_state": "parameterized" },
+    { "name": "sanitize_sql",       "removes": ["sql"], "sets_state": "parameterized" },
+    { "name": "int",                "removes": ["sql", "html", "ssrf", "shell"], "sets_state": "int" },
+    { "name": "float",              "removes": ["sql", "html", "ssrf"], "sets_state": "float" }
   ],
-  "guards": [
-    "re.match", "re.fullmatch", "isinstance", "hasattr"
-  ]
+  "transformers": [
+    { "name": "base64.b64decode",          "sets_state": "raw-bytes" },
+    { "name": "base64.b64encode",          "sets_state": "base64" },
+    { "name": "urllib.parse.unquote",      "sets_state": "raw" },
+    { "name": "urllib.parse.unquote_plus", "sets_state": "raw" },
+    { "name": "urllib.parse.quote",        "sets_state": "url-encoded" },
+    { "name": "codecs.decode",             "sets_state": "raw" },
+    { "name": "codecs.encode",             "sets_state": "encoded" },
+    { "name": "json.loads",                "sets_state": "parsed-object" },
+    { "name": "json.dumps",               "sets_state": "json-string" }
+  ],
+  "guards": ["re.match", "re.fullmatch", "isinstance", "hasattr", "urlsplit"]
 }

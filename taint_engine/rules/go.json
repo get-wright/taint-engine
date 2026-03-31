@@ -1,28 +1,48 @@
 {
   "language": "go",
   "extensions": [".go"],
-  "sources": [
-    "r.URL.Query", "r.FormValue", "r.Body",
-    "os.Getenv", "os.Args"
-  ],
+  "sources": {
+    "r.URL.Query":  ["html", "sql", "shell", "ssrf", "redirect"],
+    "r.FormValue":  ["html", "sql", "shell", "ssrf"],
+    "r.Body":       ["html", "sql", "shell", "ssrf"],
+    "os.Getenv":    ["path", "shell"],
+    "os.Args":      ["path", "shell", "eval"]
+  },
   "sinks": {
-    "call": [
-      "fmt.Fprintf", "fmt.Sprintf",
-      "http.Redirect",
-      "exec.Command",
-      "db.Query", "db.Exec", "db.QueryRow",
-      "template.HTML"
-    ],
-    "property": []
+    "html": {
+      "call":     ["fmt.Fprintf", "template.HTML"],
+      "accepts":  ["html-encoded", "int", "float"]
+    },
+    "sql": {
+      "call":     ["db.Query", "db.Exec", "db.QueryRow"],
+      "accepts":  ["parameterized", "int", "float"]
+    },
+    "shell": {
+      "call":     ["exec.Command"],
+      "accepts":  ["shell-quoted", "int", "float"]
+    },
+    "redirect": {
+      "call":     ["http.Redirect"],
+      "accepts":  ["validated-url", "relative-path"]
+    },
+    "format": {
+      "call":     ["fmt.Sprintf"],
+      "accepts":  ["int", "float"]
+    }
   },
   "sanitizers": [
-    { "name": "html.EscapeString", "neutralizes": ["CWE-79"] },
-    { "name": "url.QueryEscape", "neutralizes": ["CWE-79"] },
-    { "name": "filepath.Clean", "neutralizes": ["CWE-22"] },
-    { "name": "filepath.Base", "neutralizes": ["CWE-22"] },
-    { "name": "strconv.Atoi", "neutralizes": ["CWE-89", "CWE-79"] }
+    { "name": "html.EscapeString",  "removes": ["html"], "sets_state": "html-encoded" },
+    { "name": "url.QueryEscape",    "removes": ["html", "ssrf"], "sets_state": "url-encoded" },
+    { "name": "filepath.Clean",     "removes": ["path"], "sets_state": "normalized-path" },
+    { "name": "filepath.Base",      "removes": ["path"], "sets_state": "basename-only" },
+    { "name": "strconv.Atoi",       "removes": ["sql", "html", "ssrf", "shell"], "sets_state": "int" }
   ],
-  "guards": [
-    "regexp.MatchString", "regexp.MustCompile"
-  ]
+  "transformers": [
+    { "name": "base64.StdEncoding.DecodeString", "sets_state": "raw-bytes" },
+    { "name": "base64.StdEncoding.EncodeToString", "sets_state": "base64" },
+    { "name": "url.QueryUnescape",               "sets_state": "raw" },
+    { "name": "json.Unmarshal",                   "sets_state": "parsed-object" },
+    { "name": "json.Marshal",                     "sets_state": "json-bytes" }
+  ],
+  "guards": ["regexp.MatchString", "regexp.MustCompile"]
 }

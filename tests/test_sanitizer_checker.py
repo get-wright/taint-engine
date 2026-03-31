@@ -4,26 +4,31 @@ from taint_engine.sanitizer_checker import check_known_sanitizer, is_conditional
 def test_known_sanitizer_xss():
     result = check_known_sanitizer("html.escape")
     assert result is not None
-    assert "CWE-79" in result.cwe_categories
+    assert result.cwe_categories == ["*"]
+    assert "html" in result.removes
+    assert result.sets_state == "html-encoded"
     assert result.verified is False
 
 
 def test_known_sanitizer_sqli():
     result = check_known_sanitizer("parameterize")
     assert result is not None
-    assert "CWE-89" in result.cwe_categories
+    assert "sql" in result.removes
+    assert result.sets_state == "parameterized"
 
 
 def test_known_sanitizer_cmdi():
     result = check_known_sanitizer("shlex.quote")
     assert result is not None
-    assert "CWE-78" in result.cwe_categories
+    assert "shell" in result.removes
+    assert result.sets_state == "shell-quoted"
 
 
 def test_known_sanitizer_path_traversal():
     result = check_known_sanitizer("os.path.basename")
     assert result is not None
-    assert "CWE-22" in result.cwe_categories
+    assert "path" in result.removes
+    assert result.sets_state == "basename-only"
 
 
 def test_unknown_function_returns_none():

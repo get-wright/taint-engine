@@ -1,32 +1,59 @@
 {
   "language": "php",
   "extensions": [".php"],
-  "sources": [
-    "$_GET", "$_POST", "$_REQUEST", "$_COOKIE",
-    "$_SERVER", "$_FILES"
-  ],
+  "sources": {
+    "$_GET":     ["html", "sql", "shell", "ssrf", "redirect", "path"],
+    "$_POST":    ["html", "sql", "shell", "ssrf"],
+    "$_REQUEST": ["html", "sql", "shell", "ssrf", "redirect", "path"],
+    "$_COOKIE":  ["html", "sql"],
+    "$_SERVER":  ["html", "sql", "ssrf", "redirect"],
+    "$_FILES":   ["path"]
+  },
   "sinks": {
-    "call": [
-      "echo", "print", "eval",
-      "exec", "system", "passthru", "shell_exec",
-      "mysqli_query", "pg_query",
-      "include", "require", "include_once", "require_once",
-      "header", "file_get_contents", "file_put_contents"
-    ],
-    "property": []
+    "html": {
+      "call":     ["echo", "print"],
+      "accepts":  ["html-encoded", "int", "float", "stripped"]
+    },
+    "eval": {
+      "call":     ["eval"],
+      "accepts":  []
+    },
+    "shell": {
+      "call":     ["exec", "system", "passthru", "shell_exec"],
+      "accepts":  ["shell-quoted", "int", "float"]
+    },
+    "sql": {
+      "call":     ["mysqli_query", "pg_query"],
+      "accepts":  ["parameterized", "int", "float"]
+    },
+    "path": {
+      "call":     ["include", "require", "include_once", "require_once", "file_get_contents", "file_put_contents"],
+      "accepts":  ["normalized-path", "basename-only"]
+    },
+    "redirect": {
+      "call":     ["header"],
+      "accepts":  ["validated-url", "relative-path"]
+    }
   },
   "sanitizers": [
-    { "name": "htmlspecialchars", "neutralizes": ["CWE-79"] },
-    { "name": "htmlentities", "neutralizes": ["CWE-79"] },
-    { "name": "strip_tags", "neutralizes": ["CWE-79"] },
-    { "name": "escapeshellarg", "neutralizes": ["CWE-78"] },
-    { "name": "escapeshellcmd", "neutralizes": ["CWE-78"] },
-    { "name": "mysql_real_escape_string", "neutralizes": ["CWE-89"] },
-    { "name": "intval", "neutralizes": ["CWE-89", "CWE-79"] },
-    { "name": "realpath", "neutralizes": ["CWE-22"] },
-    { "name": "basename", "neutralizes": ["CWE-22"] }
+    { "name": "htmlspecialchars",          "removes": ["html"], "sets_state": "html-encoded" },
+    { "name": "htmlentities",              "removes": ["html"], "sets_state": "html-encoded" },
+    { "name": "strip_tags",                "removes": ["html"], "sets_state": "stripped" },
+    { "name": "escapeshellarg",            "removes": ["shell"], "sets_state": "shell-quoted" },
+    { "name": "escapeshellcmd",            "removes": ["shell"], "sets_state": "shell-quoted" },
+    { "name": "mysql_real_escape_string",  "removes": ["sql"], "sets_state": "parameterized" },
+    { "name": "intval",                    "removes": ["sql", "html", "ssrf", "shell"], "sets_state": "int" },
+    { "name": "realpath",                  "removes": ["path"], "sets_state": "normalized-path" },
+    { "name": "basename",                  "removes": ["path"], "sets_state": "basename-only" }
   ],
-  "guards": [
-    "is_numeric", "ctype_alnum", "preg_match", "filter_var"
-  ]
+  "transformers": [
+    { "name": "base64_decode",             "sets_state": "raw-bytes" },
+    { "name": "base64_encode",             "sets_state": "base64" },
+    { "name": "urldecode",                 "sets_state": "raw" },
+    { "name": "rawurldecode",              "sets_state": "raw" },
+    { "name": "urlencode",                 "sets_state": "url-encoded" },
+    { "name": "json_decode",               "sets_state": "parsed-object" },
+    { "name": "json_encode",               "sets_state": "json-string" }
+  ],
+  "guards": ["is_numeric", "ctype_alnum", "preg_match", "filter_var"]
 }

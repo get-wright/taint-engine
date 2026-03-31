@@ -1,29 +1,46 @@
 {
   "language": "java",
   "extensions": [".java"],
-  "sources": [
-    "request.getParameter", "request.getAttribute",
-    "request.getHeader", "request.getQueryString",
-    "System.getenv", "System.getProperty"
-  ],
+  "sources": {
+    "request.getParameter":   ["html", "sql", "shell", "ssrf", "redirect"],
+    "request.getAttribute":   ["html", "sql", "ssrf"],
+    "request.getHeader":      ["html", "sql", "ssrf"],
+    "request.getQueryString": ["html", "sql", "shell", "ssrf", "redirect"],
+    "System.getenv":          ["path", "shell"],
+    "System.getProperty":     ["path", "shell"]
+  },
   "sinks": {
-    "call": [
-      "Runtime.exec", "ProcessBuilder",
-      "Statement.execute", "Statement.executeQuery",
-      "PreparedStatement.execute",
-      "response.getWriter", "response.sendRedirect",
-      "RequestDispatcher.forward"
-    ],
-    "property": []
+    "html": {
+      "call":     ["response.getWriter"],
+      "accepts":  ["html-encoded", "int", "float"]
+    },
+    "sql": {
+      "call":     ["Statement.execute", "Statement.executeQuery", "PreparedStatement.execute"],
+      "accepts":  ["parameterized", "int", "float"]
+    },
+    "shell": {
+      "call":     ["Runtime.exec", "ProcessBuilder"],
+      "accepts":  ["shell-quoted", "int", "float"]
+    },
+    "redirect": {
+      "call":     ["response.sendRedirect", "RequestDispatcher.forward"],
+      "accepts":  ["validated-url", "relative-path"]
+    }
   },
   "sanitizers": [
-    { "name": "StringEscapeUtils.escapeHtml4", "neutralizes": ["CWE-79"] },
-    { "name": "HtmlUtils.htmlEscape", "neutralizes": ["CWE-79"] },
-    { "name": "Encoder.encodeForHTML", "neutralizes": ["CWE-79"] },
-    { "name": "PreparedStatement.setString", "neutralizes": ["CWE-89"] },
-    { "name": "Integer.parseInt", "neutralizes": ["CWE-89", "CWE-79"] }
+    { "name": "StringEscapeUtils.escapeHtml4", "removes": ["html"], "sets_state": "html-encoded" },
+    { "name": "HtmlUtils.htmlEscape",          "removes": ["html"], "sets_state": "html-encoded" },
+    { "name": "Encoder.encodeForHTML",          "removes": ["html"], "sets_state": "html-encoded" },
+    { "name": "PreparedStatement.setString",    "removes": ["sql"], "sets_state": "parameterized" },
+    { "name": "Integer.parseInt",               "removes": ["sql", "html", "ssrf", "shell"], "sets_state": "int" }
   ],
-  "guards": [
-    "Pattern.matches", "instanceof"
-  ]
+  "transformers": [
+    { "name": "Base64.getDecoder().decode",     "sets_state": "raw-bytes" },
+    { "name": "Base64.getEncoder().encodeToString", "sets_state": "base64" },
+    { "name": "URLDecoder.decode",              "sets_state": "raw" },
+    { "name": "URLEncoder.encode",              "sets_state": "url-encoded" },
+    { "name": "ObjectMapper.readValue",         "sets_state": "parsed-object" },
+    { "name": "ObjectMapper.writeValueAsString", "sets_state": "json-string" }
+  ],
+  "guards": ["Pattern.matches", "instanceof"]
 }
