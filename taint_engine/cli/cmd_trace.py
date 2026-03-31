@@ -89,7 +89,7 @@ def _augment_cross_file(
         sub_flow = trace_taint_flow(
             file_path=resolved.file_path,
             function_name=resolved.name,
-            sink_line=resolved.end_line,
+            sink_line=resolved.end_line + 1,
             check_id=check_id,
             cwe_list=cwe_list,
             rules=rules,
