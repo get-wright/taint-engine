@@ -213,6 +213,14 @@ def _extract_parameters(func_node, grammar) -> list[str]:
                         params.append(name_node.text.decode())
                     elif param.children and param.children[0].type == "identifier":
                         params.append(param.children[0].text.decode())
+                elif param.type in (
+                    "list_splat_pattern",
+                    "dictionary_splat_pattern",
+                ):
+                    for sub in param.children:
+                        if sub.type == "identifier":
+                            params.append(sub.text.decode())
+                            break
     return params
 
 

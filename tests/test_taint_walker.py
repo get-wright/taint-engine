@@ -376,3 +376,97 @@ def test_with_as_binding():
     assert any_dep_on_fh, (
         f"data should depend on fh, got {[d.deps for d in data_defs]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Assignment pattern tests (augmented, walrus, subscript, *args)
+# ---------------------------------------------------------------------------
+
+
+def test_augmented_assignment():
+    """x = a; x += b → x should depend on both a and b."""
+    code = "def f(a, b):\n    x = a\n    x += b\n"
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".py", grammar=grammar)
+    state.active.define("a", _param_def("a"))
+    state.active.define("b", _param_def("b"))
+    walk_body(func, grammar, state)
+
+    x_defs = state.active.reaching("x")
+    assert len(x_defs) == 1, (
+        f"x should have 1 reaching def after augmented assignment, got {len(x_defs)}"
+    )
+    defn = next(iter(x_defs))
+    assert "a" in defn.deps, (
+        f"x += b should carry forward dependency on a, got deps={defn.deps}"
+    )
+    assert "b" in defn.deps, (
+        f"x += b should depend on b, got deps={defn.deps}"
+    )
+
+
+def test_walrus_operator():
+    """if (data := input()): → data should have a reaching definition."""
+    code = "def f():\n    if (data := input()):\n        y = data\n"
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".py", grammar=grammar)
+    walk_body(func, grammar, state)
+
+    data_defs = state.active.reaching("data")
+    assert len(data_defs) >= 1, (
+        "data should have a reaching def from walrus operator"
+    )
+    y_defs = state.active.reaching("y")
+    assert len(y_defs) >= 1, "y should have a reaching def from branch body"
+    any_dep_on_data = any("data" in d.deps for d in y_defs)
+    assert any_dep_on_data, (
+        f"y should depend on data, got {[d.deps for d in y_defs]}"
+    )
+
+
+def test_subscript_assignment():
+    """d = {}; d["k"] = val → d should depend on val (merged, not killed)."""
+    code = 'def f(val):\n    d = {}\n    d["k"] = val\n'
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".py", grammar=grammar)
+    state.active.define("val", _param_def("val"))
+    walk_body(func, grammar, state)
+
+    d_defs = state.active.reaching("d")
+    assert len(d_defs) >= 2, (
+        f"d should have defs from both init and subscript assign, got {len(d_defs)}"
+    )
+    any_dep_on_val = any("val" in d.deps for d in d_defs)
+    assert any_dep_on_val, (
+        f"d should depend on val, got {[d.deps for d in d_defs]}"
+    )
+
+
+def test_star_args_parameter():
+    """def f(*args): → args should be extracted as a parameter."""
+    code = "def f(*args):\n    x = args[0]\n"
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    from taint_engine.engine import _extract_parameters
+
+    params = _extract_parameters(func, grammar)
+    assert "args" in params, f"args should be extracted as parameter, got {params}"
+
+
+def test_kwargs_parameter():
+    """def f(**kwargs): → kwargs should be extracted as a parameter."""
+    code = "def f(**kwargs):\n    x = kwargs['key']\n"
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    from taint_engine.engine import _extract_parameters
+
+    params = _extract_parameters(func, grammar)
+    assert "kwargs" in params, (
+        f"kwargs should be extracted as parameter, got {params}"
+    )

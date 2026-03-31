@@ -144,10 +144,20 @@ def _handle_assignment(node, grammar, state: WalkState) -> None:
     line = node.start_point[0] + 1
     expr_text = node.text.decode()
 
+    is_augmented = "augmented" in node.type
+    left_node = node.child_by_field_name("left")
+    is_subscript = left_node is not None and left_node.type == "subscript"
+
     for lhs_name, rhs_node in pairs:
         if not lhs_name or rhs_node is None:
             continue
         rhs_ids = frozenset(collect_identifiers(rhs_node))
+
+        if is_augmented:
+            old_deps: set[str] = set()
+            for old_defn in state.active.reaching(lhs_name):
+                old_deps.update(old_defn.deps)
+            rhs_ids = frozenset(set(rhs_ids) | old_deps | {lhs_name})
 
         defn = Definition(
             variable=AccessPath(lhs_name, ()),
@@ -157,7 +167,11 @@ def _handle_assignment(node, grammar, state: WalkState) -> None:
             deps=rhs_ids,
             branch_context="",
         )
-        state.active.define(lhs_name, defn)
+
+        if is_subscript:
+            state.active.defs.setdefault(lhs_name, set()).add(defn)
+        else:
+            state.active.define(lhs_name, defn)
 
         # Check RHS calls for sanitizers and transformers
         call_types = set(grammar.call_types)
@@ -215,12 +229,40 @@ def _check_transformer(call_node, line, grammar, state: WalkState) -> None:
         state._next_order += 1
 
 
+def _handle_walrus_in(subtree, grammar, state: WalkState) -> None:
+    """Define variables from walrus operators (named_expression) in a subtree."""
+    for n in walk_tree(subtree):
+        if n.type != "named_expression":
+            continue
+        name_node = n.child_by_field_name("name")
+        value_node = n.child_by_field_name("value")
+        if not name_node or name_node.type != "identifier":
+            continue
+        var_name = name_node.text.decode()
+        rhs_ids = (
+            frozenset(collect_identifiers(value_node))
+            if value_node
+            else frozenset()
+        )
+        line = n.start_point[0] + 1
+        defn = Definition(
+            variable=AccessPath(var_name, ()),
+            line=line,
+            expression=n.text.decode(),
+            node=n,
+            deps=rhs_ids,
+            branch_context="",
+        )
+        state.active.define(var_name, defn)
+
+
 def _handle_conditional(node, grammar, state: WalkState) -> None:
     """Handle if/elif/switch: fork-walk-merge."""
-    # Check condition for guards
+    # Check condition for guards and walrus definitions
     condition = node.child_by_field_name("condition")
     if condition:
         _check_guards_in(condition, node, grammar, state)
+        _handle_walrus_in(condition, grammar, state)
 
     # Snapshot list lengths so we can identify items added per branch
     pre_san = len(state.sanitizers)
@@ -669,6 +711,12 @@ def _extract_assignment(node, grammar) -> list[tuple[str, object | None]]:
         names = [ch.text.decode() for ch in left.children if ch.type == "identifier"]
         # All unpacked variables depend on the full RHS expression
         return [(name, right) for name in names]
+
+    # Subscript LHS: d["k"] = val → track base object "d"
+    if left.type == "subscript":
+        base = left.child_by_field_name("value")
+        if base and base.type == "identifier":
+            return [(base.text.decode(), right)]
 
     # Member access on LHS: obj.field = value
     member_types = set(grammar.member_access_types)
