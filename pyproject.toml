@@ -10,6 +10,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 
+[project.scripts]
+taint-trace = "taint_engine.cli.main:main"
+
 [project.optional-dependencies]
 # Engine-only consumers — keep >=0.23.0 for backward compat
 parsers = [
