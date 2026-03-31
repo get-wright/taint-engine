@@ -2,13 +2,14 @@
 
 import os
 
+import tree_sitter_javascript as ts_javascript
 import tree_sitter_python as ts_python
 from tree_sitter import Language, Parser as TSParser
 
 from taint_engine.walker import walk_body, WalkState, Definition
 from taint_engine.models import AccessPath
 from taint_engine.rules import load_rules
-from tests.parser_helpers import PYTHON_GRAMMAR
+from tests.parser_helpers import JS_GRAMMAR, PYTHON_GRAMMAR
 
 RULES_DIR = os.path.join(os.path.dirname(__file__), "..", "taint_engine", "rules")
 
@@ -19,6 +20,16 @@ def _parse_python(code: str):
     tree = parser.parse(code.encode())
     for child in tree.root_node.children:
         if child.type == "function_definition":
+            return child
+    raise ValueError("No function found in code")
+
+
+def _parse_js(code: str):
+    """Parse JavaScript code, return function_declaration node."""
+    parser = TSParser(Language(ts_javascript.language()))
+    tree = parser.parse(code.encode())
+    for child in tree.root_node.children:
+        if child.type == "function_declaration":
             return child
     raise ValueError("No function found in code")
 
@@ -469,4 +480,128 @@ def test_kwargs_parameter():
     params = _extract_parameters(func, grammar)
     assert "kwargs" in params, (
         f"kwargs should be extracted as parameter, got {params}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Control flow: switch/match, C-style for, branch termination
+# ---------------------------------------------------------------------------
+
+
+def test_js_switch_case_reaching_defs():
+    """JS switch: variable assigned in case branches has reaching definitions."""
+    code = (
+        "function f(x) {\n"
+        "  switch (x) {\n"
+        "    case 'a':\n"
+        "      y = 'alpha';\n"
+        "      break;\n"
+        "    case 'b':\n"
+        "      y = 'beta';\n"
+        "      break;\n"
+        "    default:\n"
+        "      y = 'other';\n"
+        "  }\n"
+        "}\n"
+    )
+    func = _parse_js(code)
+    grammar = JS_GRAMMAR
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".js", grammar=grammar)
+    state.active.define("x", _param_def("x"))
+    walk_body(func, grammar, state)
+
+    y_defs = state.active.reaching("y")
+    assert len(y_defs) >= 3, (
+        f"y should have reaching defs from all 3 switch branches, got {len(y_defs)}"
+    )
+
+
+def test_python_match_reaching_defs():
+    """Python match: variable assigned in case arms has reaching definitions."""
+    code = (
+        "def f(x):\n"
+        "    match x:\n"
+        "        case 'a':\n"
+        "            y = 'alpha'\n"
+        "        case 'b':\n"
+        "            y = 'beta'\n"
+        "    z = y\n"
+    )
+    func = _parse_python(code)
+    grammar = _make_grammar()
+
+    # Guard: skip if tree-sitter-python doesn't parse match_statement
+    from taint_engine.ast_helpers import walk_tree
+
+    has_match = any(n.type == "match_statement" for n in walk_tree(func))
+    if not has_match:
+        return
+
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".py", grammar=grammar)
+    state.active.define("x", _param_def("x"))
+    walk_body(func, grammar, state)
+
+    y_defs = state.active.reaching("y")
+    assert len(y_defs) >= 2, (
+        f"y should have reaching defs from match arms, got {len(y_defs)}"
+    )
+
+
+def test_js_cstyle_for_initializer():
+    """C-style for: for (let i = 0; ...) → i has definition from initializer."""
+    code = (
+        "function f(n) {\n"
+        "  for (let i = 0; i < n; i++) {\n"
+        "    var x = i;\n"
+        "  }\n"
+        "}\n"
+    )
+    func = _parse_js(code)
+    grammar = JS_GRAMMAR
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".js", grammar=grammar)
+    state.active.define("n", _param_def("n"))
+    walk_body(func, grammar, state)
+
+    i_defs = state.active.reaching("i")
+    assert len(i_defs) >= 1, (
+        f"i should have a reaching def from for-loop initializer, got {len(i_defs)}"
+    )
+    x_defs = state.active.reaching("x")
+    assert len(x_defs) >= 1, (
+        f"x should have a reaching def from loop body, got {len(x_defs)}"
+    )
+    any_dep_on_i = any("i" in d.deps for d in x_defs)
+    assert any_dep_on_i, (
+        f"x should depend on i, got {[d.deps for d in x_defs]}"
+    )
+
+
+def test_branch_termination_return():
+    """Branch ending in return doesn't merge its defs into the parent state."""
+    code = (
+        "def f(x, flag):\n"
+        "    y = 'default'\n"
+        "    if flag:\n"
+        "        y = 'overridden'\n"
+        "        return\n"
+        "    z = y\n"
+    )
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".py", grammar=grammar)
+    state.active.define("x", _param_def("x"))
+    state.active.define("flag", _param_def("flag"))
+    walk_body(func, grammar, state)
+
+    y_defs = state.active.reaching("y")
+    assert len(y_defs) == 1, (
+        f"y should have 1 reaching def (terminating branch excluded), got {len(y_defs)}"
+    )
+    defn = next(iter(y_defs))
+    assert "default" in defn.expression, (
+        f"y should be 'default' (not from terminated branch), got {defn.expression}"
     )

@@ -107,6 +107,8 @@ def _walk_stmts(stmts: list, grammar, state: WalkState) -> None:
             _handle_assignment(stmt, grammar, state)
         elif stmt.type in conditional_types:
             _handle_conditional(stmt, grammar, state)
+        elif stmt.type in ("switch_statement", "match_statement"):
+            _handle_switch(stmt, grammar, state)
         elif stmt.type == "try_statement":
             _handle_try(stmt, grammar, state)
         elif stmt.type == "with_statement":
@@ -296,20 +298,32 @@ def _handle_conditional(node, grammar, state: WalkState) -> None:
 
     # Walk false branch (alternative) on original state
     alternative = node.child_by_field_name("alternative")
+    false_body = None
     if alternative:
         if alternative.type in ("else_clause", "else"):
             body = alternative.child_by_field_name("body")
             if body:
                 _walk_stmts(body.children, grammar, state)
+                false_body = body
             else:
                 _walk_stmts(alternative.children, grammar, state)
+                false_body = alternative
         elif alternative.type in ("elif_clause", "if_statement"):
             _handle_conditional(alternative, grammar, state)
         else:
             _walk_stmts(alternative.children, grammar, state)
+            false_body = alternative
 
-    # Merge at join point — active defs
-    state.active.merge(true_active)
+    # Branch termination: don't merge definitions from terminated branches
+    true_terminates = _block_terminates(consequence)
+    false_terminates = _block_terminates(false_body)
+
+    if true_terminates and not false_terminates:
+        pass  # true branch is dead; keep state.active (false branch result)
+    elif false_terminates and not true_terminates:
+        state.active = true_active
+    elif not true_terminates and not false_terminates:
+        state.active.merge(true_active)
 
     # Merge branch lists — append items added in true branch
     state.sanitizers.extend(true_state.sanitizers[pre_san:])
@@ -504,6 +518,116 @@ def _define_with_binding(with_item, with_node, grammar, state: WalkState) -> Non
             return
 
 
+def _block_terminates(block_node) -> bool:
+    """Check if a block's last statement is an early-exit terminator."""
+    if block_node is None:
+        return False
+    children = block_node.children
+    for i in range(len(children) - 1, -1, -1):
+        ntype = children[i].type
+        if ntype in _TERMINATOR_TYPES:
+            return True
+        if ntype not in ("}", "comment"):
+            return False
+    return False
+
+
+def _handle_switch(node, grammar, state: WalkState) -> None:
+    """Handle switch_statement / match_statement: fork-walk-merge per case."""
+    pre_san = len(state.sanitizers)
+    pre_guard = len(state.guards)
+    pre_unresolved = len(state.unresolved)
+    pre_txf = len(state.transformers)
+
+    branch_states: list[WalkState] = []
+
+    if node.type == "switch_statement":
+        switch_body = None
+        for child in node.children:
+            if child.type == "switch_body":
+                switch_body = child
+                break
+        if switch_body is None:
+            return
+        for case_node in switch_body.children:
+            if case_node.type not in ("switch_case", "switch_default"):
+                continue
+            case_st = _fork_walk_state(state, grammar)
+            value_node = case_node.child_by_field_name("value")
+            body_stmts = [
+                c
+                for c in case_node.children
+                if c.is_named and c is not value_node
+            ]
+            _walk_stmts(body_stmts, grammar, case_st)
+            state._next_order = max(state._next_order, case_st._next_order)
+            branch_states.append(case_st)
+
+    elif node.type == "match_statement":
+        body = node.child_by_field_name("body")
+        if body is None:
+            for child in node.children:
+                if child.type == "block":
+                    body = child
+                    break
+        if body is None:
+            return
+        for case_node in body.children:
+            if case_node.type != "case_clause":
+                continue
+            case_st = _fork_walk_state(state, grammar)
+            case_body = case_node.child_by_field_name("consequence")
+            if case_body:
+                _walk_stmts(case_body.children, grammar, case_st)
+            else:
+                for sub in case_node.children:
+                    if sub.type == "block":
+                        _walk_stmts(sub.children, grammar, case_st)
+                        break
+            state._next_order = max(state._next_order, case_st._next_order)
+            branch_states.append(case_st)
+
+    for bst in branch_states:
+        state.active.merge(bst.active)
+        state.sanitizers.extend(bst.sanitizers[pre_san:])
+        state.guards.extend(bst.guards[pre_guard:])
+        state.transformers.extend(bst.transformers[pre_txf:])
+        for call in bst.unresolved[pre_unresolved:]:
+            if call not in state.unresolved:
+                state.unresolved.append(call)
+
+
+def _handle_update_expr(node, state: WalkState) -> None:
+    """Handle i++/++i/i--/--i as a self-referencing definition."""
+    arg = node.child_by_field_name("argument")
+    if not arg or arg.type != "identifier":
+        return
+    var_name = arg.text.decode()
+    line = node.start_point[0] + 1
+    defn = Definition(
+        variable=AccessPath(var_name, ()),
+        line=line,
+        expression=node.text.decode(),
+        node=node,
+        deps=frozenset({var_name}),
+        branch_context="loop",
+    )
+    state.active.define(var_name, defn)
+
+
+def _walk_increment(node, grammar, state: WalkState) -> None:
+    """Walk a C-style for-loop increment expression."""
+    if node.type == "update_expression":
+        _handle_update_expr(node, state)
+    elif node.type in set(grammar.assignment_types):
+        _handle_assignment(node, grammar, state)
+    elif node.type == "sequence_expression":
+        for child in node.children:
+            _walk_increment(child, grammar, state)
+    else:
+        _walk_stmts([node], grammar, state)
+
+
 def _check_guards_in(condition, parent_node, grammar, state):
     """Check if condition contains guard function calls."""
     call_types = set(grammar.call_types)
@@ -543,19 +667,31 @@ def _handle_loop(node, grammar, state: WalkState) -> None:
     """Handle for/while: two-pass approximation with pre-loop snapshot merge.
 
     For for-in/for-of loops, also defines the loop variable from the iterable.
+    For C-style for, walks the initializer before the body and the increment
+    after each pass.
     """
+    # C-style for: walk initializer before snapshot (always executes)
+    initializer = node.child_by_field_name("initializer")
+    if initializer is not None:
+        _walk_stmts([initializer], grammar, state)
+
     snapshot = state.active.fork()
 
-    # Define loop variable from the iterable (for x in items / for const x of items)
-    if node.type in ("for_statement", "for_in_statement"):
+    # Define loop variable from iterable (for-in / for-of / Python for)
+    if initializer is None and node.type in ("for_statement", "for_in_statement"):
         _define_loop_variable(node, grammar, state)
 
     body = node.child_by_field_name("body")
+    increment = node.child_by_field_name("increment")
     if body:
         # First pass
         _walk_stmts(body.children, grammar, state)
+        if increment is not None:
+            _walk_increment(increment, grammar, state)
         # Second pass (picks up loop-carried defs)
         _walk_stmts(body.children, grammar, state)
+        if increment is not None:
+            _walk_increment(increment, grammar, state)
 
     # Merge with pre-loop snapshot (loop might not execute)
     state.active.merge(snapshot)
@@ -618,6 +754,12 @@ def _define_loop_variable(node, grammar, state: WalkState) -> None:
 
 
 _MUTATING_METHODS = frozenset({"append", "extend", "insert", "update", "add"})
+
+_TERMINATOR_TYPES = frozenset({
+    "return_statement",
+    "raise_statement",
+    "throw_statement",
+})
 
 
 def _handle_mutating_call(call_node, grammar, state: WalkState) -> None:
