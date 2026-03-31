@@ -1,10 +1,10 @@
-# Taint Labels & Desanitizers — Design Spec
+# Taint Labels & Flow State — Design Spec
 
 ## Problem
 
 The engine treats all sanitizers as universal — `html.escape` is counted as effective
 against SQL injection, SSRF, or any other vulnerability type. In addition, if a
-value is sanitized and then later decoded/unquoted, the engine still reports it as
+value is sanitized and then later decoded/transformed, the engine still reports it as
 sanitized. Both lead to incorrect results:
 
 **Scenario A — wrong sanitizer for context:**
@@ -14,22 +14,56 @@ cursor.execute("SELECT " + safe)   # html.escape doesn't prevent SQLi
 ```
 Engine reports: "sanitized by html.escape" → **false negative**.
 
-**Scenario B — sanitization undone:**
+**Scenario B — sanitization invalidated by transformation:**
 ```python
-safe = html.escape(user_input)     # "&lt;script&gt;"
-decoded = base64.b64decode(safe)   # back to "<script>"
-el.innerHTML = decoded             # XSS
+safe = html.escape(user_input)     # data state: html-encoded
+decoded = base64.b64decode(safe)   # data state: raw-bytes (encoding is meaningless now)
+el.innerHTML = decoded             # HTML sink expects html-encoded, gets raw-bytes
 ```
 Engine reports: "sanitized by html.escape" → **false negative**.
 
 ## Solution
 
-Introduce **taint labels** — named categories like `html`, `sql`, `shell`, `ssrf`.
-Every sanitizer declares which labels it removes. A new **desanitizers** rule section
-declares functions that restore labels (undo sanitization). The engine infers the
-active label from the sink expression by matching it against a labeled sinks map.
+Introduce **taint labels** and **flow state** — a model inspired by CodeQL's
+`FlowState` where data carries a representation state through the trace.
 
-## Rule Schema Changes
+Three concepts:
+
+1. **Taint labels** — named vulnerability categories (`html`, `sql`, `shell`, `ssrf`).
+   Sinks declare which label they belong to. Sanitizers declare which labels they
+   address. A sanitizer only counts if its label matches the sink's label.
+
+2. **Flow state** — data has a *representation state* (`raw`, `html-encoded`,
+   `parameterized`, `base64`, `int`, etc.). Sanitizers set a specific state.
+   Transformers change the state. Sinks declare which states they accept as safe.
+
+3. **Transformers** — functions that change data representation without sanitizing.
+   Unlike "desanitizers" (which model undoing a specific sanitizer), transformers
+   are representation transitions. `base64.b64decode` doesn't "undo html.escape" —
+   it transitions data to `raw-bytes` regardless of prior encoding. This is more
+   general and more correct.
+
+The engine infers the active label from the sink expression, then checks whether
+the last state-setting operation in the trace path left data in a state the sink
+accepts.
+
+## Why Flow State Instead of Desanitizers
+
+The "desanitizer" concept (Psalm's `@psalm-taint-unescape`) models sanitization
+as something reversible. But `base64.b64decode` doesn't reverse `html.escape` —
+it does something completely unrelated. The real question is: **what representation
+is the data in when it reaches the sink?**
+
+| Model | Approach | Weakness |
+|---|---|---|
+| Desanitizers | Explicit list of functions that "undo" sanitization | Assumes sanitization is reversible. Misses transformations that aren't direct inverses but change representation |
+| Flow state | Every function that changes data representation is a state transition. Sinks declare what states they accept | Correct by construction — any transformation that changes representation naturally invalidates irrelevant prior sanitizations |
+
+Example: `html.escape` → `json.dumps` → HTML sink.
+- Desanitizer model: Is `json.dumps` a desanitizer for `html`? Unclear — it's not an inverse of `html.escape`.
+- Flow state model: `html.escape` sets state to `html-encoded`. `json.dumps` transitions state to `json-string`. HTML sink accepts `html-encoded` but not `json-string`. → Flagged. Correct.
+
+## Rule Schema
 
 ### Current format (backward compatible)
 
@@ -50,6 +84,9 @@ active label from the sink expression by matching it against a labeled sinks map
 
 ```json
 {
+  "language": "python",
+  "extensions": [".py"],
+
   "sources": {
     "request.args":      ["html", "sql", "shell", "ssrf", "redirect"],
     "request.form":      ["html", "sql", "shell", "ssrf"],
@@ -65,75 +102,100 @@ active label from the sink expression by matching it against a labeled sinks map
   "sinks": {
     "html": {
       "call":     ["document.write", "response.write"],
-      "property": ["innerHTML", "outerHTML"]
+      "property": ["innerHTML", "outerHTML"],
+      "accepts":  ["html-encoded", "int", "float", "stripped"]
     },
     "sql": {
-      "call":     ["cursor.execute", "db.execute", "conn.execute"]
+      "call":     ["cursor.execute", "db.execute", "conn.execute"],
+      "accepts":  ["parameterized", "int", "float"]
     },
     "shell": {
-      "call":     ["os.system", "subprocess.run", "subprocess.call", "subprocess.Popen", "os.popen"]
+      "call":     ["os.system", "subprocess.run", "subprocess.call", "subprocess.Popen", "os.popen"],
+      "accepts":  ["shell-quoted", "int", "float"]
     },
     "ssrf": {
-      "call":     ["requests.get", "requests.post", "requests.put", "urllib.request.urlopen"]
+      "call":     ["requests.get", "requests.post", "requests.put", "urllib.request.urlopen"],
+      "accepts":  ["validated-url", "int"]
     },
     "redirect": {
-      "call":     ["redirect", "HttpResponseRedirect"]
+      "call":     ["redirect", "HttpResponseRedirect"],
+      "accepts":  ["validated-url", "relative-path"]
     },
     "path": {
-      "call":     ["open", "os.path.join"]
+      "call":     ["open", "os.path.join"],
+      "accepts":  ["normalized-path", "basename-only"]
     },
     "eval": {
-      "call":     ["eval", "exec", "compile"]
+      "call":     ["eval", "exec", "compile"],
+      "accepts":  []
     }
   },
 
   "sanitizers": [
-    { "name": "html.escape",       "removes": ["html"] },
-    { "name": "markupsafe.escape",  "removes": ["html"] },
-    { "name": "bleach.clean",       "removes": ["html"] },
-    { "name": "cgi.escape",         "removes": ["html"] },
-    { "name": "escape",             "removes": ["html"] },
-    { "name": "strip_tags",         "removes": ["html"] },
-    { "name": "shlex.quote",        "removes": ["shell"] },
-    { "name": "os.path.basename",   "removes": ["path"] },
-    { "name": "os.path.normpath",   "removes": ["path"] },
-    { "name": "parameterize",       "removes": ["sql"] },
-    { "name": "sanitize_sql",       "removes": ["sql"] },
-    { "name": "int",                "removes": ["sql", "html", "ssrf"] },
-    { "name": "float",              "removes": ["sql", "html", "ssrf"] }
+    { "name": "html.escape",       "removes": ["html"], "sets_state": "html-encoded" },
+    { "name": "markupsafe.escape",  "removes": ["html"], "sets_state": "html-encoded" },
+    { "name": "bleach.clean",       "removes": ["html"], "sets_state": "html-encoded" },
+    { "name": "cgi.escape",         "removes": ["html"], "sets_state": "html-encoded" },
+    { "name": "strip_tags",         "removes": ["html"], "sets_state": "stripped" },
+    { "name": "shlex.quote",        "removes": ["shell"], "sets_state": "shell-quoted" },
+    { "name": "os.path.basename",   "removes": ["path"], "sets_state": "basename-only" },
+    { "name": "os.path.normpath",   "removes": ["path"], "sets_state": "normalized-path" },
+    { "name": "parameterize",       "removes": ["sql"], "sets_state": "parameterized" },
+    { "name": "sanitize_sql",       "removes": ["sql"], "sets_state": "parameterized" },
+    { "name": "int",                "removes": ["sql", "html", "ssrf", "shell"], "sets_state": "int" },
+    { "name": "float",              "removes": ["sql", "html", "ssrf"], "sets_state": "float" }
   ],
 
-  "desanitizers": [
-    { "name": "base64.b64decode",          "restores": ["html", "sql", "shell"] },
-    { "name": "urllib.parse.unquote",      "restores": ["html"] },
-    { "name": "urllib.parse.unquote_plus", "restores": ["html"] },
-    { "name": "codecs.decode",             "restores": ["html", "sql"] },
-    { "name": "json.loads",                "restores": ["html", "sql"] }
+  "transformers": [
+    { "name": "base64.b64decode",          "sets_state": "raw-bytes" },
+    { "name": "base64.b64encode",          "sets_state": "base64" },
+    { "name": "urllib.parse.unquote",      "sets_state": "raw" },
+    { "name": "urllib.parse.unquote_plus", "sets_state": "raw" },
+    { "name": "urllib.parse.quote",        "sets_state": "url-encoded" },
+    { "name": "codecs.decode",             "sets_state": "raw" },
+    { "name": "codecs.encode",             "sets_state": "encoded" },
+    { "name": "json.loads",                "sets_state": "parsed-object" },
+    { "name": "json.dumps",               "sets_state": "json-string" },
+    { "name": "str",                       "sets_state": "raw" },
+    { "name": "bytes.decode",              "sets_state": "raw" }
   ],
 
   "guards": ["re.match", "re.fullmatch", "isinstance", "hasattr", "urlsplit"]
 }
 ```
 
-### Backward compatibility rules
+### Key design points
 
-The loader must handle both old and new formats:
+**`sanitizers` have both `removes` and `sets_state`:**
+- `removes` answers: "which taint label does this sanitizer address?" (Scenario A)
+- `sets_state` answers: "what representation is the data in after this call?" (Scenario B)
+
+**`transformers` only have `sets_state`:**
+- They don't remove any taint label. They just change representation.
+- If a transformer runs after a sanitizer, it overwrites the state. The sanitizer's
+  state is gone.
+
+**`sinks` have `accepts`:**
+- A list of states that are safe for this sink type.
+- If the data's state at the sink is in `accepts`, the sanitization chain is effective.
+- If `accepts` is empty (like `eval`), no state is ever safe — nothing can sanitize `eval`.
+- If `accepts` is absent, no state checking — existing behavior.
+
+### Backward compatibility
 
 | Old format | Interpretation |
 |---|---|
-| `"sources"` is a `list[str]` | Each source emits all labels (equivalent to `["*"]`) |
-| `"sinks"` has flat `"call"` / `"property"` keys (old format) | Populate `call_sinks` / `property_sinks` as before; label detection returns `None` |
-| `"sinks"` has labeled keys with `"call"` / `"property"` sub-keys (new format) | Populate `call_sinks` and `property_sinks` by flattening all entries; also build `labeled_sinks` for label detection |
-| Sanitizer has `"neutralizes"` but no `"removes"` | `"neutralizes"` is kept for metadata; sanitizer treated as removing all labels (universal) |
-| No `"desanitizers"` key | No desanitizer checking — existing behavior |
+| `"sources"` is a `list[str]` | Each source emits all labels |
+| `"sinks"` has flat `"call"` / `"property"` keys | Populate `call_sinks` / `property_sinks` as before; label detection returns `None`; no state checking |
+| Sanitizer has `"neutralizes"` but no `"removes"` or `"sets_state"` | Treated as removing all labels, setting state `"sanitized"` (universal) |
+| No `"transformers"` key | No state transitions — existing behavior |
 
-## Label Detection
+## Label and State Detection
 
-When the engine finds the sink expression at the target line, it determines the
-**active label** by matching the sink identifier (callee name for calls, property
-name for property assignments) against the labeled `sinks` map.
+### Label detection
 
-### Algorithm
+When the engine finds the sink at the target line, it matches the sink identifier
+(callee name or property name) against the labeled `sinks` map to get the active label.
 
 ```
 function detect_label(sink_identifier, rules, ext):
@@ -142,30 +204,77 @@ function detect_label(sink_identifier, rules, ext):
         return None
 
     for label, sink_def in lang_rules.labeled_sinks.items():
-        call_sinks = sink_def.get("call", [])
-        prop_sinks = sink_def.get("property", [])
-        for sink_name in call_sinks + prop_sinks:
+        all_names = sink_def.get("call", []) + sink_def.get("property", [])
+        for sink_name in all_names:
             if sink_name in sink_identifier:
                 return label
 
-    return None  # no match → all sanitizers count
+    return None  # no match → all sanitizers count, no state checking
 ```
 
 The `sink_identifier` is extracted from `_find_vars_at_line()`:
-- **Pass 1 (call arguments)**: the callee name from `get_full_callee(call_node)`
-- **Pass 2 (return statements)**: `None` (no specific sink function)
-- **Pass 3 (property assignments)**: the property name from `get_member_property(left)`
+- **Pass 1 (call arguments)**: `get_full_callee(call_node)`
+- **Pass 2 (return statements)**: `None`
+- **Pass 3 (property assignments)**: `get_member_property(left)`
 
-`_find_vars_at_line()` return type changes to `list[tuple[str, str, str | None]]`
-where the third element is the `sink_identifier`.
+Return type changes to `list[tuple[str, str, str | None]]` — third element is the
+sink identifier.
 
-This runs inside `trace_taint_flow()` after `_find_vars_at_line()` identifies the
-sink variables. The first `(sink_var, sink_expr, sink_id)` that yields a label wins.
+### State checking
+
+Once the label is known, look up `accepts` for that label. Then scan the trace path
+(source → sink order) to find the **last state-setting operation** (sanitizer or
+transformer). If that operation's `sets_state` is in `accepts`, the flow is sanitized.
+If not, it's unsanitized.
+
+```
+function check_flow_state(flow, active_label, rules, ext):
+    lang_rules = rules.for_extension(ext)
+    sink_def = lang_rules.labeled_sinks.get(active_label)
+    if sink_def is None:
+        return  # no state checking
+
+    accepted_states = sink_def.get("accepts")
+    if accepted_states is None:
+        return  # no state checking for this sink
+
+    # Find the last state-setting operation in the path
+    last_state = "raw"  # default: untransformed user input
+    last_state_setter = None
+
+    # Walk path in source→sink order
+    for step in flow.path:
+        # Check if this step contains a sanitizer
+        for san in flow.sanitizers:
+            if san.line == step.line and san.sets_state:
+                last_state = san.sets_state
+                last_state_setter = san.name
+
+        # Check if this step contains a transformer
+        for tfm in flow.transformers:
+            if tfm.line == step.line:
+                last_state = tfm.sets_state
+                last_state_setter = tfm.name
+
+    flow.final_state = last_state
+
+    # Mark sanitizers as effective/ineffective based on final state
+    if last_state in accepted_states:
+        # Final state is safe — sanitization chain worked
+        pass
+    else:
+        # Final state is NOT safe
+        for san in flow.sanitizers:
+            if san.effective:
+                if last_state_setter and last_state_setter != san.name:
+                    san.effective = False
+                    san.invalidated_by = f"{last_state_setter} (state: {last_state})"
+```
 
 ### CLI override
 
-`taint-trace trace file.py:42 --label sql` sets the active label explicitly,
-bypassing auto-detection. Useful when the sink function is not in the rules map.
+`taint-trace trace file.py:42 --label sql` forces the active label, bypassing
+auto-detection.
 
 ## Engine Changes
 
@@ -175,16 +284,22 @@ bypassing auto-detection. Useful when the sink function is not in the rules map.
 @dataclass(frozen=True)
 class LanguageRules:
     language: str
-    sources: frozenset[str]                          # flat set (backward compat)
-    labeled_sources: dict[str, list[str]] | None     # NEW: source → labels
-    call_sinks: frozenset[str]                       # kept for Pass 1 (any-call matching)
-    property_sinks: frozenset[str]                   # kept for Pass 3
-    labeled_sinks: dict[str, list[str]] | None       # NEW: label → sink names
-    sanitizers: MappingProxyType[str, list[str]]      # existing
-    sanitizer_labels: dict[str, list[str]] | None    # NEW: sanitizer name → removes labels
-    desanitizers: dict[str, list[str]] | None        # NEW: function name → restores labels
+    sources: frozenset[str]                           # flat set (backward compat)
+    labeled_sources: dict[str, list[str]] | None      # source → label list
+    call_sinks: frozenset[str]                        # flattened for Pass 1
+    property_sinks: frozenset[str]                    # flattened for Pass 3
+    labeled_sinks: dict[str, dict] | None             # label → {call, property, accepts}
+    sanitizers: MappingProxyType[str, list[str]]       # existing (name → CWE list)
+    sanitizer_labels: dict[str, list[str]] | None     # sanitizer name → removes labels
+    sanitizer_states: dict[str, str] | None           # sanitizer name → sets_state
+    transformers: dict[str, str] | None               # transformer name → sets_state
     guards: frozenset[str]
 ```
+
+The loader populates `call_sinks` and `property_sinks` by flattening all labeled
+sink entries (union of all `call` and `property` lists across all labels). This
+preserves backward compatibility — `_find_vars_at_line()` Pass 3 still calls
+`rules.is_property_sink()` and gets correct results.
 
 ### 2. `SanitizerInfo` — new fields
 
@@ -193,59 +308,60 @@ class LanguageRules:
 class SanitizerInfo:
     name: str
     line: int
-    cwe_categories: list[str]    # kept for backward compat
-    removes: list[str]           # NEW: taint labels this sanitizer removes
+    cwe_categories: list[str]       # kept for backward compat
+    removes: list[str]              # NEW: taint labels this sanitizer addresses
+    sets_state: str | None          # NEW: data representation after this sanitizer
     conditional: bool
     verified: bool
-    effective: bool = True       # NEW: False if wrong label or invalidated by desanitizer
-    invalidated_by: str | None = None  # NEW: desanitizer name that voided this
+    effective: bool = True          # NEW: False if wrong label or state not accepted
+    invalidated_by: str | None = None  # NEW: transformer/sanitizer that overwrote state
 ```
 
-The `removes` field defaults to `["*"]` (universal) when the old rule format is used.
+`removes` defaults to `["*"]` and `sets_state` defaults to `"sanitized"` when
+old rule format is used.
 
-`from_dict()` must handle missing keys for backward compatibility:
+`from_dict()` handles missing keys:
 ```python
 removes=d.get("removes", ["*"]),
+sets_state=d.get("sets_state"),
 effective=d.get("effective", True),
 invalidated_by=d.get("invalidated_by"),
 ```
 
-### 3. `DesanitizerInfo` — new dataclass
+### 3. `TransformerInfo` — new dataclass
 
 ```python
 @dataclass
-class DesanitizerInfo:
-    """A function call that undoes a prior sanitization."""
+class TransformerInfo:
+    """A function call that changes data representation without sanitizing."""
     name: str
     line: int
-    restores: list[str]   # taint labels this function re-introduces
+    sets_state: str   # data representation after this call
 ```
 
-Desanitizers are detected during the forward walk by AST-based callee matching
-(same as sanitizers), **not** by post-hoc substring search on expression text.
-This ensures correct matching regardless of import aliasing (e.g.,
-`from base64 import b64decode` produces callee `b64decode`, which matches via
-suffix indexing the same way sanitizers do).
+### 4. `TaintFlow` — new fields
 
-### 4. `WalkState` and `TaintFlow` — carry desanitizers
-
-`WalkState` gets a new field: `desanitizers: list[DesanitizerInfo]`.
-
-`TaintFlow` gets two new fields:
 ```python
-active_label: str | None = None        # detected taint label for this flow
-desanitizers: list[DesanitizerInfo] = field(default_factory=list)
+@dataclass
+class TaintFlow:
+    ...
+    active_label: str | None = None             # detected taint label
+    transformers: list[TransformerInfo] = field(default_factory=list)
+    final_state: str | None = None              # data state at the sink
 ```
 
-`TaintFlow.from_dict()` handles missing keys:
+`from_dict()`:
 ```python
 active_label=d.get("active_label"),
-desanitizers=[DesanitizerInfo(**x) for x in d.get("desanitizers", [])],
+transformers=[TransformerInfo(**x) for x in d.get("transformers", [])],
+final_state=d.get("final_state"),
 ```
 
-### 5. `trace_taint_flow()` — new `label` parameter and post-processing
+### 5. `WalkState` — carry transformers
 
-Add `label: str | None = None` to the keyword-only args:
+`WalkState` gets a new field: `transformers: list[TransformerInfo]`.
+
+### 6. `trace_taint_flow()` — new `label` parameter and post-processing
 
 ```python
 def trace_taint_flow(
@@ -261,194 +377,217 @@ def trace_taint_flow(
 ) -> Optional[TaintFlow]:
 ```
 
-After the backward trace produces a `TaintFlow`, a new `_apply_label_analysis()`
-step runs. Cross-file sub-traces (in `cmd_trace.py`) inherit the parent's label.
+After the backward trace, post-processing runs two checks:
 
-```
-function _apply_label_analysis(flow, active_label, rules, ext):
-    if active_label is None:
-        return flow  # no label → existing behavior, all sanitizers effective
+**Check 1 — Label matching** (Scenario A):
+For each sanitizer, if `active_label not in sanitizer.removes` and `"*" not in
+sanitizer.removes`, mark `effective = False`.
 
-    flow.active_label = active_label
-    lang_rules = rules.for_extension(ext)
+**Check 2 — State acceptance** (Scenario B):
+Walk the path in source→sink order. Track the last `sets_state` from any sanitizer
+or transformer. Compare to `accepts` list for the active label's sink definition.
+If the final state is not in `accepts`, mark the responsible sanitizer as
+`effective = False` with `invalidated_by` showing what changed the state.
 
-    # Step 1: Check each sanitizer's effectiveness for the active label
-    for san in flow.sanitizers:
-        if "*" not in san.removes and active_label not in san.removes:
-            san.effective = False  # wrong sanitizer for this sink type
+Cross-file sub-traces inherit the parent's label.
 
-    # Step 2: Check for desanitizers that void effective sanitizers
-    for san in flow.sanitizers:
-        if not san.effective:
-            continue
-        for desan in flow.desanitizers:
-            if desan.line > san.line and active_label in desan.restores:
-                san.effective = False
-                san.invalidated_by = desan.name
-                break
+### 7. Walker — detect transformers
 
-    # Step 3 (optional): Check if source emits the active label
-    if lang_rules and lang_rules.labeled_sources:
-        source_step = flow.source
-        for source_name, labels in lang_rules.labeled_sources.items():
-            if source_name in source_step.expression:
-                if active_label not in labels:
-                    flow.confidence_factors.append(
-                        f"source '{source_name}' may not emit '{active_label}' taint"
-                    )
-                break
+A new `_check_transformer()` function, parallel to `_check_sanitizer()`, uses
+AST-based callee matching (`get_callee_name` / `get_full_callee` + suffix indexing)
+to detect transformer calls and record them in `state.transformers`.
 
-    return flow
-```
+Called from `_handle_assignment()` alongside `_check_sanitizer()`, for every call
+on the RHS of an assignment.
 
-### 6. Walker — detect sanitizers and desanitizers
+### 8. `_find_vars_at_line()` — return sink identifier
 
-`_check_sanitizer()` now also populates the `removes` field from the rule's
-`sanitizer_labels` map. If the rule uses old format, `removes = ["*"]`.
-
-A new `_check_desanitizer()` function uses the same AST-based callee matching
-(via `get_callee_name` / `get_full_callee`) to detect desanitizer calls and
-record them in `state.desanitizers`. Suffix indexing (e.g., `b64decode` matching
-`base64.b64decode`) works the same way it does for sanitizers.
-
-### 7. `_find_vars_at_line()` — return sink identifier
-
-Currently returns `list[tuple[str, str]]` as `(variable_name, expression_text)`.
-Add the sink identifier so `trace_taint_flow()` can detect the label without
-re-parsing. Change to `list[tuple[str, str, str | None]]` where the third element
-is:
-- **Pass 1 (call arguments)**: `get_full_callee(call_node)` — the callee name
+Return type changes to `list[tuple[str, str, str | None]]`:
+- **Pass 1 (call arguments)**: `get_full_callee(call_node)` — callee name
 - **Pass 2 (return statements)**: `None`
-- **Pass 3 (property assignments)**: `get_member_property(left)` — the property name
+- **Pass 3 (property assignments)**: `get_member_property(left)` — property name
+
+### 9. `TaintRuleSet` — new query methods
+
+```python
+def check_transformer(self, ext: str, callee: str) -> TransformerInfo | None:
+    """Check if a callee is a known transformer. Returns TransformerInfo or None."""
+
+def get_accepted_states(self, ext: str, label: str) -> list[str] | None:
+    """Get the accepted states for a sink label. Returns None if no state checking."""
+
+def get_sanitizer_state(self, ext: str, callee: str) -> str | None:
+    """Get the state a sanitizer sets. Returns None if not configured."""
+```
+
+Suffix indexing (bare name fallback) works the same as `check_sanitizer`.
 
 ## Output Changes
 
 ### JSON output
 
-`SanitizerInfo.to_dict()` adds:
-
+`SanitizerInfo.to_dict()`:
 ```json
 {
   "name": "html.escape",
   "line": 15,
   "removes": ["html"],
+  "sets_state": "html-encoded",
   "effective": false,
-  "invalidated_by": null,
+  "invalidated_by": "base64.b64decode (state: raw-bytes)",
   "cwe_categories": ["CWE-79"],
   "conditional": false,
   "verified": true
 }
 ```
 
+`TaintFlow.to_dict()` adds:
+```json
+{
+  "active_label": "html",
+  "final_state": "raw-bytes",
+  "transformers": [
+    { "name": "base64.b64decode", "line": 20, "sets_state": "raw-bytes" }
+  ]
+}
+```
+
 ### Text output
 
-When a sanitizer is ineffective:
-
+When a sanitizer's label doesn't match:
 ```
-  Sanitizers: html.escape (INEFFECTIVE — does not neutralize 'sql' taint)
-```
-
-When a sanitizer is invalidated by a desanitizer:
-
-```
-  Sanitizers: html.escape (INVALIDATED by base64.b64decode at line 20)
+  Sanitizers: html.escape (INEFFECTIVE — does not address 'sql' sinks)
 ```
 
-### TaintFlow — new field
-
-```python
-@dataclass
-class TaintFlow:
-    ...
-    active_label: str | None = None   # NEW: the detected taint label for this flow
+When a transformer changed the state after sanitization:
+```
+  Sanitizers: html.escape (INEFFECTIVE — state changed to 'raw-bytes' by base64.b64decode at line 20)
+  Flow state: raw → html-encoded → raw-bytes (sink expects: html-encoded)
 ```
 
-This is included in `to_dict()` output so consumers know which label was active.
+When sanitization is effective:
+```
+  Sanitizers: html.escape (effective, state: html-encoded)
+  Flow state: raw → html-encoded (sink accepts: html-encoded ✓)
+```
 
 ## File Map
 
 | File | Change |
 |---|---|
-| `taint_engine/rules/python.json` | New format: labeled sources, labeled sinks, removes on sanitizers, desanitizers section |
+| `taint_engine/rules/python.json` | New format: labeled sources, labeled sinks with `accepts`, sanitizers with `removes`/`sets_state`, transformers section |
 | `taint_engine/rules/javascript.json` | Same structural changes |
 | `taint_engine/rules/go.json` | Same structural changes |
 | `taint_engine/rules/java.json` | Same structural changes |
 | `taint_engine/rules/php.json` | Same structural changes |
-| `taint_engine/rules/__init__.py` | Load new fields, backward-compat loader, new `LanguageRules` fields |
-| `taint_engine/models.py` | `SanitizerInfo`: add `removes`, `effective`, `invalidated_by`; add `DesanitizerInfo` dataclass; `TaintFlow`: add `active_label`, `desanitizers` |
-| `taint_engine/engine.py` | `trace_taint_flow()`: add `label` param, label detection, `_apply_label_analysis()` post-processing; `_find_vars_at_line()`: return `sink_identifier` |
-| `taint_engine/walker.py` | `_check_sanitizer()` populates `removes` field; new `_check_desanitizer()` using AST-based callee matching; `WalkState` gets `desanitizers` list |
+| `taint_engine/rules/__init__.py` | Load new fields, backward-compat loader, new `LanguageRules` fields, new query methods |
+| `taint_engine/models.py` | `SanitizerInfo`: add `removes`, `sets_state`, `effective`, `invalidated_by`; add `TransformerInfo`; `TaintFlow`: add `active_label`, `transformers`, `final_state` |
+| `taint_engine/engine.py` | `trace_taint_flow()`: add `label` param, label detection, state-checking post-processing; `_find_vars_at_line()`: return `sink_identifier` |
+| `taint_engine/walker.py` | `_check_sanitizer()` populates `removes`/`sets_state`; new `_check_transformer()`; `WalkState` gets `transformers` list |
 | `taint_engine/cli/cmd_trace.py` | Accept `--label` CLI flag, pass to engine |
-| `taint_engine/cli/formatters/text.py` | Show effective/ineffective/invalidated sanitizers |
-| `taint_engine/cli/formatters/json_fmt.py` | Include new fields in JSON output |
-| `taint_engine/cli/formatters/sarif.py` | Include label and effectiveness in SARIF relatedLocations |
-| `tests/test_taint_engine.py` | Tests for label-aware sanitizer filtering |
-| `tests/test_taint_walker.py` | Tests for `removes` field population |
-| `tests/test_taint_rules.py` | Tests for new rule format loading + backward compat |
-| `tests/test_taint_models.py` | Tests for new SanitizerInfo/TaintFlow serialization |
+| `taint_engine/cli/formatters/text.py` | Show state chain, effective/ineffective sanitizers |
+| `taint_engine/cli/formatters/json_fmt.py` | Include new fields |
+| `taint_engine/cli/formatters/sarif.py` | Include label, state, transformers in SARIF |
+| `tests/test_taint_engine.py` | Tests for label matching + state acceptance |
+| `tests/test_taint_walker.py` | Tests for transformer detection, `sets_state` population |
+| `tests/test_taint_rules.py` | Tests for new rule format + backward compat |
+| `tests/test_taint_models.py` | Tests for new dataclass serialization |
 
 ## Test Scenarios
 
-### Label-aware sanitizer filtering
+### Scenario A: Wrong sanitizer for context
 
 ```python
-# Scenario A: html.escape before SQL sink
 def vuln_a(user_input):
     safe = html.escape(user_input)
-    cursor.execute("SELECT " + safe)   # label = "sql", html.escape removes ["html"] → INEFFECTIVE
+    cursor.execute("SELECT " + safe)
 ```
-Expected: flow reported with `html.escape` marked `effective=False`.
+- Label: `sql` (from `cursor.execute`)
+- `html.escape` removes `["html"]` → `"sql" not in ["html"]` → **INEFFECTIVE**
+- Expected: flow flagged, sanitizer marked ineffective
 
-### Desanitizer invalidation
+### Scenario B: Transformation invalidates sanitization
 
 ```python
-# Scenario B: sanitize then decode
 def vuln_b(user_input):
     safe = html.escape(user_input)
     decoded = base64.b64decode(safe)
-    return decoded                     # label = "html", html.escape was valid but b64decode restores ["html"] → INVALIDATED
+    return decoded  # used in HTML context
 ```
-Expected: flow reported with `html.escape` marked `effective=False, invalidated_by="base64.b64decode"`.
+- Label: `html`
+- State chain: `raw` → `html-encoded` (html.escape) → `raw-bytes` (b64decode)
+- Sink accepts: `["html-encoded", "int", "float", "stripped"]`
+- Final state: `raw-bytes` → **NOT IN accepts** → **INEFFECTIVE**
+- `invalidated_by`: `"base64.b64decode (state: raw-bytes)"`
 
-### Correct sanitization (no change)
+### Scenario C: Correct sanitization preserved
 
 ```python
-def safe_fn(user_input):
+def safe_c(user_input):
     safe = html.escape(user_input)
-    response.write(safe)               # label = "html", html.escape removes ["html"] → EFFECTIVE
+    response.write(safe)
 ```
-Expected: flow reported with `html.escape` marked `effective=True`.
+- Label: `html`
+- State chain: `raw` → `html-encoded` (html.escape)
+- Final state: `html-encoded` → **IN accepts** → **EFFECTIVE**
 
-### No label match (backward compat)
+### Scenario D: Transformer after sanitizer but state still accepted
+
+```python
+def safe_d(user_input):
+    n = int(user_input)
+    query = str(n)
+    cursor.execute("SELECT " + query)
+```
+- Label: `sql`
+- State chain: `raw` → `int` (int()) → `raw` (str())
+- Wait — `str()` sets state to `raw`, which is NOT in sql accepts `["parameterized", "int", "float"]`.
+- But `int()` already removed all dangerous content. `str(int(x))` is safe.
+- This reveals that `str()` should NOT be a transformer for numeric types, OR
+  `int`/`float` states should be "sticky" (not overwritten by `str()`).
+- **Resolution**: Don't list `str()` as a transformer. It's a representation-
+  preserving operation for our purposes — it doesn't change the safety properties.
+  Only list functions that change encoding/format in security-relevant ways.
+
+### Scenario E: No label match (backward compat)
 
 ```python
 def unknown_sink(user_input):
-    custom_function(user_input)        # not in sinks map → label = None → all sanitizers count
+    custom_function(user_input)
 ```
-Expected: existing behavior unchanged.
+- Sink not in map → label = `None` → no state checking → all sanitizers count
+- Existing behavior preserved
 
-### CLI --label override
+### Scenario F: CLI --label override
 
 ```
 taint-trace trace app.py:42 --label sql
 ```
-Forces `active_label = "sql"` regardless of what the sink expression matches.
+Forces `active_label = "sql"` regardless of sink expression.
 
 ## Known Limitations
 
-- **Sanitizers are function-scoped, not path-scoped.** The forward walker records
-  all sanitizers and desanitizers found anywhere in the function body, including
-  on variables unrelated to the traced taint path. `_apply_label_analysis()` marks
-  them all as effective/ineffective. This can produce confusing output (e.g., a
-  sanitizer on a different variable flagged "INEFFECTIVE"). Filtering sanitizers
-  to only those on the taint path is a future improvement.
+- **Sanitizers and transformers are function-scoped, not path-scoped.** The walker
+  records all sanitizers/transformers in the function body, including on unrelated
+  variables. State checking uses line numbers to order them along the path, but may
+  include operations on different variables. Filtering to path-relevant operations
+  is a future improvement.
 
-- **Desanitizer list is manual.** The rules must explicitly list functions that undo
-  sanitization. The engine does not infer this automatically.
+- **Transformer list is manual.** Rules must explicitly list state-changing functions.
+  The engine doesn't infer representation changes automatically.
+
+- **State is a single value, not a set.** Each operation overwrites the previous
+  state. This is sufficient for the backward trace post-processing model but less
+  expressive than CodeQL's full flow-state-set approach.
+
+- **`str()` and similar "neutral" calls.** Some functions (like `str()`) technically
+  change representation but don't affect safety. These should NOT be listed as
+  transformers. Only list functions that change encoding/format in security-relevant
+  ways. When in doubt, omit it — an unlisted function preserves the previous state.
 
 ## Non-Goals
 
-- Full interprocedural taint coloring (Psalm-style label sets flowing through every node)
-- CWE-to-label mapping — labels are derived from sink matching, not from external CWE input
-- Automatic detection of desanitizer functions — the list is maintained manually in rules
-- Changing the forward walker's branch-merge semantics (conditional reassignment is a separate issue)
+- Full forward flow-state tracking (CodeQL-style `StateConfigSig` with per-node state sets)
+- CWE-to-label mapping — labels come from sink matching only
+- Automatic transformer detection
+- Branch-sensitive state tracking (conditional state changes)
