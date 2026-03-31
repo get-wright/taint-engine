@@ -32,7 +32,7 @@ PYTHON_GRAMMAR = GrammarConfig(
     assignment_types=("assignment", "augmented_assignment"),
     parameter_types=("parameters",),
     return_types=("return_statement",),
-    conditional_types=("if_statement", "try_statement"),
+    conditional_types=("if_statement",),
     member_access_types=("attribute",),
     has_arrow_functions=False,
 )
@@ -47,7 +47,7 @@ JS_GRAMMAR = GrammarConfig(
     ),
     parameter_types=("formal_parameters",),
     return_types=("return_statement",),
-    conditional_types=("if_statement", "try_statement"),
+    conditional_types=("if_statement",),
     member_access_types=("member_expression",),
     has_arrow_functions=True,
 )

@@ -107,6 +107,10 @@ def _walk_stmts(stmts: list, grammar, state: WalkState) -> None:
             _handle_assignment(stmt, grammar, state)
         elif stmt.type in conditional_types:
             _handle_conditional(stmt, grammar, state)
+        elif stmt.type == "try_statement":
+            _handle_try(stmt, grammar, state)
+        elif stmt.type == "with_statement":
+            _handle_with(stmt, grammar, state)
         elif stmt.type in ("for_statement", "while_statement", "for_in_statement"):
             _handle_loop(stmt, grammar, state)
         elif stmt.type == "expression_statement":
@@ -272,6 +276,190 @@ def _handle_conditional(node, grammar, state: WalkState) -> None:
     for call in true_state.unresolved[pre_unresolved:]:
         if call not in state.unresolved:
             state.unresolved.append(call)
+
+
+def _handle_try(node, grammar, state: WalkState) -> None:
+    """Handle try/except/else/finally: fork-walk-merge for branching clauses.
+
+    The try body may raise at any point, so each except handler sees the
+    pre-try state merged with partial try-body state. The finally clause
+    always executes and is walked on the merged parent state.
+    """
+    pre_san = len(state.sanitizers)
+    pre_guard = len(state.guards)
+    pre_unresolved = len(state.unresolved)
+    pre_txf = len(state.transformers)
+
+    branch_states: list[WalkState] = []
+
+    # Fork and walk the try body
+    try_body = node.child_by_field_name("body")
+    if try_body:
+        try_st = _fork_walk_state(state, grammar)
+        _walk_stmts(try_body.children, grammar, try_st)
+        state._next_order = max(state._next_order, try_st._next_order)
+        branch_states.append(try_st)
+
+    # Walk each except_clause on a forked state
+    for child in node.children:
+        if child.type == "except_clause":
+            exc_st = _fork_walk_state(state, grammar)
+            _define_except_binding(child, exc_st)
+            # The handler body is the block child
+            for sub in child.children:
+                if sub.type == "block":
+                    _walk_stmts(sub.children, grammar, exc_st)
+                    break
+            state._next_order = max(state._next_order, exc_st._next_order)
+            branch_states.append(exc_st)
+
+    # Walk optional else clause on a forked state
+    for child in node.children:
+        if child.type == "else_clause":
+            else_st = _fork_walk_state(state, grammar)
+            else_body = child.child_by_field_name("body")
+            if else_body:
+                _walk_stmts(else_body.children, grammar, else_st)
+            else:
+                _walk_stmts(child.children, grammar, else_st)
+            state._next_order = max(state._next_order, else_st._next_order)
+            branch_states.append(else_st)
+            break
+
+    # Merge all branch active-defs and lists into parent state
+    for bst in branch_states:
+        state.active.merge(bst.active)
+        state.sanitizers.extend(bst.sanitizers[pre_san:])
+        state.guards.extend(bst.guards[pre_guard:])
+        state.transformers.extend(bst.transformers[pre_txf:])
+        for call in bst.unresolved[pre_unresolved:]:
+            if call not in state.unresolved:
+                state.unresolved.append(call)
+
+    # Finally clause always executes — walk on the (now-merged) parent state
+    for child in node.children:
+        if child.type == "finally_clause":
+            for sub in child.children:
+                if sub.type == "block":
+                    _walk_stmts(sub.children, grammar, state)
+                    break
+            break
+
+
+def _fork_walk_state(state: WalkState, grammar) -> WalkState:
+    """Create a forked WalkState with shallow-copied mutable lists."""
+    return WalkState(
+        rules=state.rules,
+        ext=state.ext,
+        grammar=grammar,
+        active=state.active.fork(),
+        sanitizers=list(state.sanitizers),
+        guards=list(state.guards),
+        unresolved=list(state.unresolved),
+        transformers=list(state.transformers),
+        _next_order=state._next_order,
+    )
+
+
+def _define_except_binding(except_node, state: WalkState) -> None:
+    """Extract and define the `as` binding from an except clause.
+
+    except Exception as e:  →  defines 'e'
+    Tree-sitter: (except_clause (as_pattern ... alias: (as_pattern_target (identifier))))
+    """
+    for child in except_node.children:
+        if child.type == "as_pattern":
+            alias = child.child_by_field_name("alias")
+            if alias:
+                # alias is as_pattern_target containing an identifier
+                for sub in alias.children:
+                    if sub.type == "identifier":
+                        var_name = sub.text.decode()
+                        line = except_node.start_point[0] + 1
+                        defn = Definition(
+                            variable=AccessPath(var_name, ()),
+                            line=line,
+                            expression=f"except-as: {var_name}",
+                            node=except_node,
+                            deps=frozenset(),
+                            branch_context="",
+                        )
+                        state.active.define(var_name, defn)
+                        return
+                # alias itself may be the identifier
+                if alias.type == "identifier":
+                    var_name = alias.text.decode()
+                    line = except_node.start_point[0] + 1
+                    defn = Definition(
+                        variable=AccessPath(var_name, ()),
+                        line=line,
+                        expression=f"except-as: {var_name}",
+                        node=except_node,
+                        deps=frozenset(),
+                        branch_context="",
+                    )
+                    state.active.define(var_name, defn)
+                    return
+
+
+def _handle_with(node, grammar, state: WalkState) -> None:
+    """Handle with statement: define `as` binding and walk body.
+
+    with open(path) as fh:
+        body
+    Tree-sitter: (with_statement (with_clause (with_item value: ... (as_pattern_target (identifier)))) body: (block ...))
+    """
+    # Extract with_item children for bindings
+    for child in node.children:
+        if child.type == "with_clause":
+            for item in child.children:
+                if item.type == "with_item":
+                    _define_with_binding(item, node, grammar, state)
+        elif child.type == "with_item":
+            _define_with_binding(child, node, grammar, state)
+
+    body = node.child_by_field_name("body")
+    if body:
+        _walk_stmts(body.children, grammar, state)
+
+
+def _define_with_binding(with_item, with_node, grammar, state: WalkState) -> None:
+    """Extract and define the `as` binding from a with_item.
+
+    Tree-sitter wraps `ctx as name` in an as_pattern inside with_item:
+      (with_item (as_pattern <context_expr> (as_pattern_target (identifier))))
+    When there is no `as`, the with_item contains the bare expression.
+    """
+    line = with_node.start_point[0] + 1
+
+    for child in with_item.children:
+        if child.type == "as_pattern":
+            context_node = None
+            binding_name = None
+            for sub in child.children:
+                if sub.type == "as_pattern_target":
+                    for leaf in sub.children:
+                        if leaf.type == "identifier":
+                            binding_name = leaf.text.decode()
+                elif sub.type not in ("as", "keyword"):
+                    context_node = sub
+
+            if binding_name:
+                value_ids: frozenset[str] = frozenset()
+                expr = "with-context"
+                if context_node:
+                    value_ids = frozenset(collect_identifiers(context_node))
+                    expr = context_node.text.decode()
+                defn = Definition(
+                    variable=AccessPath(binding_name, ()),
+                    line=line,
+                    expression=expr,
+                    node=with_node,
+                    deps=value_ids,
+                    branch_context="",
+                )
+                state.active.define(binding_name, defn)
+            return
 
 
 def _check_guards_in(condition, parent_node, grammar, state):

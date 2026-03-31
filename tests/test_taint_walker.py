@@ -273,3 +273,106 @@ def test_discovery_order_incremental():
     assert san_order < txf_order, (
         f"sanitizer order ({san_order}) should precede transformer order ({txf_order})"
     )
+
+
+# ---------------------------------------------------------------------------
+# try/except and with statement tests
+# ---------------------------------------------------------------------------
+
+
+def test_try_except_handler_assignment():
+    """Variable assigned in except handler has a reaching definition."""
+    code = (
+        "def f(x):\n"
+        "    try:\n"
+        "        y = x\n"
+        "    except:\n"
+        "        y = 'fallback'\n"
+        "    z = y\n"
+    )
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".py", grammar=grammar)
+    state.active.define("x", _param_def("x"))
+    walk_body(func, grammar, state)
+
+    y_defs = state.active.reaching("y")
+    assert len(y_defs) == 2, (
+        f"y should have 2 reaching defs (try body + except), got {len(y_defs)}"
+    )
+    z_defs = state.active.reaching("z")
+    assert len(z_defs) == 1, "z should have a reaching def"
+
+
+def test_try_except_as_binding():
+    """except Exception as e: creates a definition for e."""
+    code = (
+        "def f(x):\n"
+        "    try:\n"
+        "        y = x\n"
+        "    except Exception as e:\n"
+        "        z = e\n"
+    )
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".py", grammar=grammar)
+    state.active.define("x", _param_def("x"))
+    walk_body(func, grammar, state)
+
+    e_defs = state.active.reaching("e")
+    assert len(e_defs) >= 1, "e should have a reaching def from except-as binding"
+    z_defs = state.active.reaching("z")
+    assert len(z_defs) >= 1, "z should have a reaching def from except handler body"
+    any_dep_on_e = any("e" in d.deps for d in z_defs)
+    assert any_dep_on_e, f"z should depend on e, got {[d.deps for d in z_defs]}"
+
+
+def test_try_finally_definitions_active():
+    """Definitions in finally block are active after the try statement."""
+    code = (
+        "def f(x):\n"
+        "    try:\n"
+        "        y = x\n"
+        "    finally:\n"
+        "        cleanup = 'done'\n"
+        "    z = cleanup\n"
+    )
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".py", grammar=grammar)
+    state.active.define("x", _param_def("x"))
+    walk_body(func, grammar, state)
+
+    cleanup_defs = state.active.reaching("cleanup")
+    assert len(cleanup_defs) >= 1, (
+        "cleanup should have a reaching def from finally block"
+    )
+    z_defs = state.active.reaching("z")
+    assert len(z_defs) >= 1, "z should have a reaching def after try/finally"
+
+
+def test_with_as_binding():
+    """with open(path) as fh: creates a definition for fh; body is walked."""
+    code = (
+        "def f(path):\n"
+        "    with open(path) as fh:\n"
+        "        data = fh\n"
+    )
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".py", grammar=grammar)
+    state.active.define("path", _param_def("path"))
+    walk_body(func, grammar, state)
+
+    fh_defs = state.active.reaching("fh")
+    assert len(fh_defs) >= 1, "fh should have a reaching def from with-as binding"
+    data_defs = state.active.reaching("data")
+    assert len(data_defs) >= 1, "data should have a reaching def from with body"
+    any_dep_on_fh = any("fh" in d.deps for d in data_defs)
+    assert any_dep_on_fh, (
+        f"data should depend on fh, got {[d.deps for d in data_defs]}"
+    )
