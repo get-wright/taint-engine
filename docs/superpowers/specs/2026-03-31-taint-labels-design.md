@@ -63,13 +63,28 @@ active label from the sink expression by matching it against a labeled sinks map
   },
 
   "sinks": {
-    "html":     ["innerHTML", "document.write", "response.write"],
-    "sql":      ["cursor.execute", "db.execute", "conn.execute"],
-    "shell":    ["os.system", "subprocess.run", "subprocess.call", "subprocess.Popen", "os.popen"],
-    "ssrf":     ["requests.get", "requests.post", "requests.put", "urllib.request.urlopen"],
-    "redirect": ["redirect", "HttpResponseRedirect"],
-    "path":     ["open", "os.path.join"],
-    "eval":     ["eval", "exec", "compile"]
+    "html": {
+      "call":     ["document.write", "response.write"],
+      "property": ["innerHTML", "outerHTML"]
+    },
+    "sql": {
+      "call":     ["cursor.execute", "db.execute", "conn.execute"]
+    },
+    "shell": {
+      "call":     ["os.system", "subprocess.run", "subprocess.call", "subprocess.Popen", "os.popen"]
+    },
+    "ssrf": {
+      "call":     ["requests.get", "requests.post", "requests.put", "urllib.request.urlopen"]
+    },
+    "redirect": {
+      "call":     ["redirect", "HttpResponseRedirect"]
+    },
+    "path": {
+      "call":     ["open", "os.path.join"]
+    },
+    "eval": {
+      "call":     ["eval", "exec", "compile"]
+    }
   },
 
   "sanitizers": [
@@ -89,13 +104,11 @@ active label from the sink expression by matching it against a labeled sinks map
   ],
 
   "desanitizers": [
-    { "name": "base64.b64decode",       "restores": ["html", "sql", "shell"] },
-    { "name": "base64.b64encode",       "restores": [] },
-    { "name": "urllib.parse.unquote",   "restores": ["html"] },
+    { "name": "base64.b64decode",          "restores": ["html", "sql", "shell"] },
+    { "name": "urllib.parse.unquote",      "restores": ["html"] },
     { "name": "urllib.parse.unquote_plus", "restores": ["html"] },
-    { "name": "codecs.decode",          "restores": ["html", "sql"] },
-    { "name": "json.loads",             "restores": ["html", "sql"] },
-    { "name": ".decode",                "restores": ["html"] }
+    { "name": "codecs.decode",             "restores": ["html", "sql"] },
+    { "name": "json.loads",                "restores": ["html", "sql"] }
   ],
 
   "guards": ["re.match", "re.fullmatch", "isinstance", "hasattr", "urlsplit"]
@@ -109,35 +122,45 @@ The loader must handle both old and new formats:
 | Old format | Interpretation |
 |---|---|
 | `"sources"` is a `list[str]` | Each source emits all labels (equivalent to `["*"]`) |
-| `"sinks"` has `"call"` / `"property"` keys | Flatten into label-less sinks; label detection returns `None` |
+| `"sinks"` has flat `"call"` / `"property"` keys (old format) | Populate `call_sinks` / `property_sinks` as before; label detection returns `None` |
+| `"sinks"` has labeled keys with `"call"` / `"property"` sub-keys (new format) | Populate `call_sinks` and `property_sinks` by flattening all entries; also build `labeled_sinks` for label detection |
 | Sanitizer has `"neutralizes"` but no `"removes"` | `"neutralizes"` is kept for metadata; sanitizer treated as removing all labels (universal) |
 | No `"desanitizers"` key | No desanitizer checking — existing behavior |
 
 ## Label Detection
 
 When the engine finds the sink expression at the target line, it determines the
-**active label** by matching the callee or property against the labeled `sinks` map.
+**active label** by matching the sink identifier (callee name for calls, property
+name for property assignments) against the labeled `sinks` map.
 
 ### Algorithm
 
 ```
-function detect_label(sink_expression, rules, ext):
+function detect_label(sink_identifier, rules, ext):
     lang_rules = rules.for_extension(ext)
     if lang_rules is None or lang_rules.labeled_sinks is None:
         return None
 
-    callee = extract_callee_from_expression(sink_expression)
-
-    for label, sink_names in lang_rules.labeled_sinks.items():
-        for sink_name in sink_names:
-            if sink_name in callee:
+    for label, sink_def in lang_rules.labeled_sinks.items():
+        call_sinks = sink_def.get("call", [])
+        prop_sinks = sink_def.get("property", [])
+        for sink_name in call_sinks + prop_sinks:
+            if sink_name in sink_identifier:
                 return label
 
     return None  # no match → all sanitizers count
 ```
 
+The `sink_identifier` is extracted from `_find_vars_at_line()`:
+- **Pass 1 (call arguments)**: the callee name from `get_full_callee(call_node)`
+- **Pass 2 (return statements)**: `None` (no specific sink function)
+- **Pass 3 (property assignments)**: the property name from `get_member_property(left)`
+
+`_find_vars_at_line()` return type changes to `list[tuple[str, str, str | None]]`
+where the third element is the `sink_identifier`.
+
 This runs inside `trace_taint_flow()` after `_find_vars_at_line()` identifies the
-sink variables. The first `(sink_var, sink_expr)` that yields a label wins.
+sink variables. The first `(sink_var, sink_expr, sink_id)` that yields a label wins.
 
 ### CLI override
 
@@ -180,16 +203,73 @@ class SanitizerInfo:
 
 The `removes` field defaults to `["*"]` (universal) when the old rule format is used.
 
-### 3. `trace_taint_flow()` — label-aware post-processing
+`from_dict()` must handle missing keys for backward compatibility:
+```python
+removes=d.get("removes", ["*"]),
+effective=d.get("effective", True),
+invalidated_by=d.get("invalidated_by"),
+```
 
-After the backward trace completes and produces a `TaintFlow`, a new
-`_apply_label_analysis()` step runs:
+### 3. `DesanitizerInfo` — new dataclass
+
+```python
+@dataclass
+class DesanitizerInfo:
+    """A function call that undoes a prior sanitization."""
+    name: str
+    line: int
+    restores: list[str]   # taint labels this function re-introduces
+```
+
+Desanitizers are detected during the forward walk by AST-based callee matching
+(same as sanitizers), **not** by post-hoc substring search on expression text.
+This ensures correct matching regardless of import aliasing (e.g.,
+`from base64 import b64decode` produces callee `b64decode`, which matches via
+suffix indexing the same way sanitizers do).
+
+### 4. `WalkState` and `TaintFlow` — carry desanitizers
+
+`WalkState` gets a new field: `desanitizers: list[DesanitizerInfo]`.
+
+`TaintFlow` gets two new fields:
+```python
+active_label: str | None = None        # detected taint label for this flow
+desanitizers: list[DesanitizerInfo] = field(default_factory=list)
+```
+
+`TaintFlow.from_dict()` handles missing keys:
+```python
+active_label=d.get("active_label"),
+desanitizers=[DesanitizerInfo(**x) for x in d.get("desanitizers", [])],
+```
+
+### 5. `trace_taint_flow()` — new `label` parameter and post-processing
+
+Add `label: str | None = None` to the keyword-only args:
+
+```python
+def trace_taint_flow(
+    *,
+    file_path: str,
+    function_name: str,
+    sink_line: int,
+    check_id: str,
+    cwe_list: list[str],
+    rules: TaintRuleSet,
+    parser: object,
+    label: str | None = None,    # NEW: explicit label override
+) -> Optional[TaintFlow]:
+```
+
+After the backward trace produces a `TaintFlow`, a new `_apply_label_analysis()`
+step runs. Cross-file sub-traces (in `cmd_trace.py`) inherit the parent's label.
 
 ```
 function _apply_label_analysis(flow, active_label, rules, ext):
     if active_label is None:
         return flow  # no label → existing behavior, all sanitizers effective
 
+    flow.active_label = active_label
     lang_rules = rules.for_extension(ext)
 
     # Step 1: Check each sanitizer's effectiveness for the active label
@@ -198,21 +278,17 @@ function _apply_label_analysis(flow, active_label, rules, ext):
             san.effective = False  # wrong sanitizer for this sink type
 
     # Step 2: Check for desanitizers that void effective sanitizers
-    if lang_rules.desanitizers:
-        for san in flow.sanitizers:
-            if not san.effective:
-                continue
-            # Look for desanitizer calls in the flow path AFTER the sanitizer
-            for step in flow.path:
-                if step.line <= san.line:
-                    continue
-                for desan_name, restores in lang_rules.desanitizers.items():
-                    if desan_name in step.expression and active_label in restores:
-                        san.effective = False
-                        san.invalidated_by = desan_name
+    for san in flow.sanitizers:
+        if not san.effective:
+            continue
+        for desan in flow.desanitizers:
+            if desan.line > san.line and active_label in desan.restores:
+                san.effective = False
+                san.invalidated_by = desan.name
+                break
 
     # Step 3 (optional): Check if source emits the active label
-    if lang_rules.labeled_sources:
+    if lang_rules and lang_rules.labeled_sources:
         source_step = flow.source
         for source_name, labels in lang_rules.labeled_sources.items():
             if source_name in source_step.expression:
@@ -225,18 +301,25 @@ function _apply_label_analysis(flow, active_label, rules, ext):
     return flow
 ```
 
-### 4. Walker `_check_sanitizer()` — populate `removes`
+### 6. Walker — detect sanitizers and desanitizers
 
-When the walker records a sanitizer, it now also populates the `removes` field
-from the rule's `sanitizer_labels` map. If the rule uses old format,
-`removes = ["*"]`.
+`_check_sanitizer()` now also populates the `removes` field from the rule's
+`sanitizer_labels` map. If the rule uses old format, `removes = ["*"]`.
 
-### 5. `_find_vars_at_line()` — return callee name
+A new `_check_desanitizer()` function uses the same AST-based callee matching
+(via `get_callee_name` / `get_full_callee`) to detect desanitizer calls and
+record them in `state.desanitizers`. Suffix indexing (e.g., `b64decode` matching
+`base64.b64decode`) works the same way it does for sanitizers.
+
+### 7. `_find_vars_at_line()` — return sink identifier
 
 Currently returns `list[tuple[str, str]]` as `(variable_name, expression_text)`.
-Add the callee name to the return value so `trace_taint_flow()` can detect the
-label without re-parsing. Change to `list[tuple[str, str, str | None]]` where the
-third element is the callee name (or `None` for non-call sinks).
+Add the sink identifier so `trace_taint_flow()` can detect the label without
+re-parsing. Change to `list[tuple[str, str, str | None]]` where the third element
+is:
+- **Pass 1 (call arguments)**: `get_full_callee(call_node)` — the callee name
+- **Pass 2 (return statements)**: `None`
+- **Pass 3 (property assignments)**: `get_member_property(left)` — the property name
 
 ## Output Changes
 
@@ -292,9 +375,9 @@ This is included in `to_dict()` output so consumers know which label was active.
 | `taint_engine/rules/java.json` | Same structural changes |
 | `taint_engine/rules/php.json` | Same structural changes |
 | `taint_engine/rules/__init__.py` | Load new fields, backward-compat loader, new `LanguageRules` fields |
-| `taint_engine/models.py` | `SanitizerInfo`: add `removes`, `effective`, `invalidated_by`. `TaintFlow`: add `active_label` |
-| `taint_engine/engine.py` | Label detection in `trace_taint_flow()`, `_apply_label_analysis()` post-processing, updated `_find_vars_at_line()` return |
-| `taint_engine/walker.py` | `_check_sanitizer()` populates `removes` field |
+| `taint_engine/models.py` | `SanitizerInfo`: add `removes`, `effective`, `invalidated_by`; add `DesanitizerInfo` dataclass; `TaintFlow`: add `active_label`, `desanitizers` |
+| `taint_engine/engine.py` | `trace_taint_flow()`: add `label` param, label detection, `_apply_label_analysis()` post-processing; `_find_vars_at_line()`: return `sink_identifier` |
+| `taint_engine/walker.py` | `_check_sanitizer()` populates `removes` field; new `_check_desanitizer()` using AST-based callee matching; `WalkState` gets `desanitizers` list |
 | `taint_engine/cli/cmd_trace.py` | Accept `--label` CLI flag, pass to engine |
 | `taint_engine/cli/formatters/text.py` | Show effective/ineffective/invalidated sanitizers |
 | `taint_engine/cli/formatters/json_fmt.py` | Include new fields in JSON output |
@@ -350,6 +433,18 @@ Expected: existing behavior unchanged.
 taint-trace trace app.py:42 --label sql
 ```
 Forces `active_label = "sql"` regardless of what the sink expression matches.
+
+## Known Limitations
+
+- **Sanitizers are function-scoped, not path-scoped.** The forward walker records
+  all sanitizers and desanitizers found anywhere in the function body, including
+  on variables unrelated to the traced taint path. `_apply_label_analysis()` marks
+  them all as effective/ineffective. This can produce confusing output (e.g., a
+  sanitizer on a different variable flagged "INEFFECTIVE"). Filtering sanitizers
+  to only those on the taint path is a future improvement.
+
+- **Desanitizer list is manual.** The rules must explicitly list functions that undo
+  sanitization. The engine does not infer this automatically.
 
 ## Non-Goals
 
