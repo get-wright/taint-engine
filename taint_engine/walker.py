@@ -20,7 +20,7 @@ from .ast_helpers import (
     is_conditional_ancestor,
     walk_tree,
 )
-from .models import AccessPath, GuardInfo, SanitizerInfo
+from .models import AccessPath, GuardInfo, SanitizerInfo, TransformerInfo
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +84,8 @@ class WalkState:
     sanitizers: list[SanitizerInfo] = dataclass_field(default_factory=list)
     guards: list[GuardInfo] = dataclass_field(default_factory=list)
     unresolved: list[str] = dataclass_field(default_factory=list)
+    transformers: list[TransformerInfo] = dataclass_field(default_factory=list)
+    _next_order: int = 0
 
 
 def walk_body(func_node, grammar, state: WalkState) -> None:
@@ -153,10 +155,11 @@ def _handle_assignment(node, grammar, state: WalkState) -> None:
         )
         state.active.define(lhs_name, defn)
 
-        # Check RHS calls for sanitizers
+        # Check RHS calls for sanitizers and transformers
         call_types = set(grammar.call_types)
         for call_node in find_calls_in(rhs_node, call_types):
             _check_sanitizer(call_node, line, node, grammar, state)
+            _check_transformer(call_node, line, grammar, state)
 
 
 def _check_sanitizer(call_node, line, context_node, grammar, state):
@@ -176,10 +179,36 @@ def _check_sanitizer(call_node, line, context_node, grammar, state):
         san.conditional = is_conditional_ancestor(
             context_node, set(grammar.conditional_types)
         )
+        san.discovery_order = state._next_order
+        state._next_order += 1
         state.sanitizers.append(san)
     else:
         if callee_full and callee_full not in state.unresolved:
             state.unresolved.append(callee_full)
+
+
+def _check_transformer(call_node, line, grammar, state: WalkState) -> None:
+    """Check if a call is a known transformer and record it."""
+    callee = get_callee_name(call_node)
+    if not callee:
+        return
+    callee_full = get_full_callee(call_node) or callee
+
+    result = state.rules.check_transformer(state.ext, callee_full)
+    if result is None and callee_full != callee:
+        result = state.rules.check_transformer(state.ext, callee)
+
+    if result is not None:
+        canonical_name, sets_state = result
+        state.transformers.append(
+            TransformerInfo(
+                name=canonical_name,
+                line=line,
+                sets_state=sets_state,
+                discovery_order=state._next_order,
+            )
+        )
+        state._next_order += 1
 
 
 def _handle_conditional(node, grammar, state: WalkState) -> None:
@@ -189,16 +218,24 @@ def _handle_conditional(node, grammar, state: WalkState) -> None:
     if condition:
         _check_guards_in(condition, node, grammar, state)
 
-    # Fork for true branch
+    # Snapshot list lengths so we can identify items added per branch
+    pre_san = len(state.sanitizers)
+    pre_guard = len(state.guards)
+    pre_unresolved = len(state.unresolved)
+    pre_txf = len(state.transformers)
+
+    # Fork for true branch — shallow-copy all mutable lists
     true_active = state.active.fork()
     true_state = WalkState(
         rules=state.rules,
         ext=state.ext,
         grammar=grammar,
         active=true_active,
-        sanitizers=state.sanitizers,
-        guards=state.guards,
-        unresolved=state.unresolved,
+        sanitizers=list(state.sanitizers),
+        guards=list(state.guards),
+        unresolved=list(state.unresolved),
+        transformers=list(state.transformers),
+        _next_order=state._next_order,
     )
 
     # Walk true branch (consequence)
@@ -207,6 +244,9 @@ def _handle_conditional(node, grammar, state: WalkState) -> None:
     )
     if consequence:
         _walk_stmts(consequence.children, grammar, true_state)
+
+    # Sync discovery_order counter so false branch continues from true branch
+    state._next_order = max(state._next_order, true_state._next_order)
 
     # Walk false branch (alternative) on original state
     alternative = node.child_by_field_name("alternative")
@@ -222,8 +262,16 @@ def _handle_conditional(node, grammar, state: WalkState) -> None:
         else:
             _walk_stmts(alternative.children, grammar, state)
 
-    # Merge at join point
+    # Merge at join point — active defs
     state.active.merge(true_active)
+
+    # Merge branch lists — append items added in true branch
+    state.sanitizers.extend(true_state.sanitizers[pre_san:])
+    state.guards.extend(true_state.guards[pre_guard:])
+    state.transformers.extend(true_state.transformers[pre_txf:])
+    for call in true_state.unresolved[pre_unresolved:]:
+        if call not in state.unresolved:
+            state.unresolved.append(call)
 
 
 def _check_guards_in(condition, parent_node, grammar, state):

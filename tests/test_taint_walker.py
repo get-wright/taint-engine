@@ -172,3 +172,104 @@ def test_walk_for_loop_variable():
     assert any_dep_on_entries, (
         f"entry should depend on entries, got {[d.deps for d in entry_defs]}"
     )
+
+
+def test_sanitizer_branch_isolation():
+    """Sanitizer in one branch doesn't leak to the other branch's flow."""
+    code = (
+        "def f(x, flag):\n"
+        "    if flag:\n"
+        "        y = html.escape(x)\n"
+        "    else:\n"
+        "        y = shlex.quote(x)\n"
+    )
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".py", grammar=grammar)
+    state.active.define("x", _param_def("x"))
+    state.active.define("flag", _param_def("flag"))
+    walk_body(func, grammar, state)
+
+    names = {s.name for s in state.sanitizers}
+    assert "html.escape" in names
+    assert "shlex.quote" in names
+    assert len(state.sanitizers) == 2
+    for san in state.sanitizers:
+        assert san.conditional, f"{san.name} should be conditional"
+
+
+def test_transformer_detection():
+    """base64.b64decode(x) on RHS records a TransformerInfo."""
+    code = "def f(x):\n    y = base64.b64decode(x)\n"
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".py", grammar=grammar)
+    state.active.define("x", _param_def("x"))
+    walk_body(func, grammar, state)
+
+    assert len(state.transformers) >= 1
+    t = state.transformers[0]
+    assert t.name == "base64.b64decode"
+    assert t.sets_state == "raw-bytes"
+    assert t.line == 2
+
+
+def test_transformer_suffix_matching():
+    """Bare b64decode matches rule base64.b64decode via suffix indexing."""
+    code = "def f(x):\n    y = b64decode(x)\n"
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".py", grammar=grammar)
+    state.active.define("x", _param_def("x"))
+    walk_body(func, grammar, state)
+
+    assert len(state.transformers) >= 1
+    t = state.transformers[0]
+    assert t.name == "base64.b64decode"
+    assert t.sets_state == "raw-bytes"
+
+
+def test_walk_state_transformers_populated():
+    """WalkState.transformers list is populated with multiple transformers."""
+    code = (
+        "def f(x):\n"
+        "    y = base64.b64decode(x)\n"
+        "    z = json.loads(y)\n"
+    )
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".py", grammar=grammar)
+    state.active.define("x", _param_def("x"))
+    walk_body(func, grammar, state)
+
+    assert len(state.transformers) == 2
+    names = [t.name for t in state.transformers]
+    assert "base64.b64decode" in names
+    assert "json.loads" in names
+
+
+def test_discovery_order_incremental():
+    """discovery_order is assigned incrementally across sanitizers and transformers."""
+    code = (
+        "def f(x):\n"
+        "    y = html.escape(x)\n"
+        "    z = base64.b64decode(y)\n"
+    )
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".py", grammar=grammar)
+    state.active.define("x", _param_def("x"))
+    walk_body(func, grammar, state)
+
+    assert len(state.sanitizers) >= 1
+    assert len(state.transformers) >= 1
+    san_order = state.sanitizers[0].discovery_order
+    txf_order = state.transformers[0].discovery_order
+    assert san_order < txf_order, (
+        f"sanitizer order ({san_order}) should precede transformer order ({txf_order})"
+    )
