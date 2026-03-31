@@ -68,6 +68,11 @@ class SanitizerInfo:
     cwe_categories: list[str]
     conditional: bool
     verified: bool
+    removes: list[str] = field(default_factory=lambda: ["*"])
+    sets_state: str | None = "sanitized"
+    discovery_order: int = 0
+    effective: bool = True
+    invalidated_by: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -76,6 +81,11 @@ class SanitizerInfo:
             "cwe_categories": self.cwe_categories,
             "conditional": self.conditional,
             "verified": self.verified,
+            "removes": self.removes,
+            "sets_state": self.sets_state,
+            "discovery_order": self.discovery_order,
+            "effective": self.effective,
+            "invalidated_by": self.invalidated_by,
         }
 
     @classmethod
@@ -86,6 +96,37 @@ class SanitizerInfo:
             cwe_categories=d["cwe_categories"],
             conditional=d["conditional"],
             verified=d["verified"],
+            removes=d.get("removes", ["*"]),
+            sets_state=d.get("sets_state", "sanitized"),
+            discovery_order=d.get("discovery_order", 0),
+            effective=d.get("effective", True),
+            invalidated_by=d.get("invalidated_by"),
+        )
+
+
+@dataclass
+class TransformerInfo:
+    """A function call that changes data representation without sanitizing."""
+
+    name: str
+    line: int
+    sets_state: str
+    discovery_order: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "line": self.line,
+            "sets_state": self.sets_state,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> TransformerInfo:
+        return cls(
+            name=d["name"],
+            line=d["line"],
+            sets_state=d["sets_state"],
+            discovery_order=d.get("discovery_order", 0),
         )
 
 
@@ -174,6 +215,9 @@ class TaintFlow:
     confidence_factors: list[str] = field(default_factory=list)
     inferred: Optional[InferredSinkSource] = None
     guards: list[GuardInfo] = field(default_factory=list)
+    active_label: str | None = None
+    transformers: list[TransformerInfo] = field(default_factory=list)
+    final_state: str | None = None
 
     @property
     def source(self) -> FlowStep:
@@ -192,6 +236,9 @@ class TaintFlow:
             "confidence_factors": self.confidence_factors,
             "inferred": self.inferred.to_dict() if self.inferred else None,
             "guards": [g.to_dict() for g in self.guards],
+            "active_label": self.active_label,
+            "transformers": [t.to_dict() for t in self.transformers],
+            "final_state": self.final_state,
         }
 
     @classmethod
@@ -210,4 +257,9 @@ class TaintFlow:
             if d.get("inferred")
             else None,
             guards=[GuardInfo.from_dict(g) for g in d.get("guards", [])],
+            active_label=d.get("active_label"),
+            transformers=[
+                TransformerInfo.from_dict(t) for t in d.get("transformers", [])
+            ],
+            final_state=d.get("final_state"),
         )
