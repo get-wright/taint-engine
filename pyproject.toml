@@ -11,18 +11,26 @@ requires-python = ">=3.11"
 license = {text = "MIT"}
 
 [project.optional-dependencies]
-# tree-sitter grammars needed to actually parse files
-# Install these in the consumer project
+# Engine-only consumers — keep >=0.23.0 for backward compat
 parsers = [
     "tree-sitter>=0.23.0",
     "tree-sitter-python>=0.23.0",
     "tree-sitter-javascript>=0.23.0",
 ]
+# CLI requires 0.25.x QueryCursor behavior plus TS / TSX grammar support
+cli = [
+    "tree-sitter>=0.25.0,<0.26.0",
+    "tree-sitter-python>=0.25.0,<0.26.0",
+    "tree-sitter-javascript>=0.25.0,<0.26.0",
+    "tree-sitter-typescript>=0.23.2,<0.24.0",
+]
 dev = [
     "pytest>=8.0",
-    "tree-sitter>=0.23.0",
-    "tree-sitter-python>=0.23.0",
-    "tree-sitter-javascript>=0.23.0",
+    "pytest-asyncio>=1.0",
+    "tree-sitter>=0.25.0,<0.26.0",
+    "tree-sitter-python>=0.25.0,<0.26.0",
+    "tree-sitter-javascript>=0.25.0,<0.26.0",
+    "tree-sitter-typescript>=0.23.2,<0.24.0",
 ]
 
 [tool.setuptools.packages.find]
