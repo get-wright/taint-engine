@@ -447,3 +447,62 @@ def test_existing_fixture_js_innerhtml():
     )
     assert flow is not None
     assert flow.source.kind == "parameter"
+
+
+# --- Source detection false positives ---
+
+
+def test_source_false_positive_string():
+    """String literal mentioning 'request.args' is NOT a real source."""
+    flow = trace_taint_flow(
+        file_path=os.path.join(FIXTURES, "taint_edge_cases.py"),
+        function_name="source_false_positive_string",
+        sink_line=7,
+        check_id="python.sqli",
+        cwe_list=["CWE-89"],
+        rules=RULES,
+        parser=PARSER,
+    )
+    assert flow is not None
+    assert flow.source.kind != "source", (
+        f"String literal should not match source 'request.args', "
+        f"got kind={flow.source.kind}"
+    )
+
+
+def test_source_false_positive_validate_input():
+    """validate_input() does NOT match source input()."""
+    flow = trace_taint_flow(
+        file_path=os.path.join(FIXTURES, "taint_edge_cases.py"),
+        function_name="source_false_positive_validate",
+        sink_line=12,
+        check_id="python.sqli",
+        cwe_list=["CWE-89"],
+        rules=RULES,
+        parser=PARSER,
+    )
+    assert flow is not None
+    assert flow.source.kind != "source", (
+        f"validate_input() should not match source 'input()', "
+        f"got kind={flow.source.kind}"
+    )
+
+
+# --- Keyword arg filtering ---
+
+
+def test_keyword_arg_not_in_sink_vars():
+    """requests.get(url, timeout=5) — keyword arg name 'timeout' is not a sink var."""
+    flow = trace_taint_flow(
+        file_path=os.path.join(FIXTURES, "taint_edge_cases.py"),
+        function_name="keyword_arg_filtering",
+        sink_line=17,
+        check_id="python.ssrf",
+        cwe_list=["CWE-918"],
+        rules=RULES,
+        parser=PARSER,
+    )
+    assert flow is not None
+    assert flow.source.variable != "timeout", (
+        "keyword arg name 'timeout' should not be treated as a sink variable"
+    )

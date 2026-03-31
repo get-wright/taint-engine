@@ -90,12 +90,6 @@ def test_labeled_sources_flatten_to_sources():
     assert "input()" in rules.sources
 
 
-def test_is_source_python():
-    ruleset = load_rules(RULES_DIR)
-    assert ruleset.is_source(".py", "request.args") is True
-    assert ruleset.is_source(".py", "totally_safe") is False
-
-
 # ---------------------------------------------------------------------------
 # Labeled sinks: flatten into call_sinks/property_sinks + labeled_sinks
 # ---------------------------------------------------------------------------

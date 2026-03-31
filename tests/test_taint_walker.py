@@ -579,6 +579,61 @@ def test_js_cstyle_for_initializer():
     )
 
 
+def test_collect_identifiers_skips_callee():
+    """collect_identifiers on len(x) returns {x}, not {len, x}."""
+    code = "def f(x):\n    y = len(x)\n"
+    func = _parse_python(code)
+    from taint_engine.ast_helpers import collect_identifiers, walk_tree
+
+    for n in walk_tree(func):
+        if n.type == "assignment":
+            right = n.child_by_field_name("right")
+            if right:
+                ids = collect_identifiers(right)
+                assert "x" in ids, f"x should be in identifiers, got {ids}"
+                assert "len" not in ids, (
+                    f"callee 'len' should be skipped, got {ids}"
+                )
+                return
+    assert False, "No assignment found in code"
+
+
+def test_collect_identifiers_skips_method_name():
+    """collect_identifiers on html.escape(x) skips method name 'escape'."""
+    code = "def f(x):\n    y = html.escape(x)\n"
+    func = _parse_python(code)
+    from taint_engine.ast_helpers import collect_identifiers, walk_tree
+
+    for n in walk_tree(func):
+        if n.type == "assignment":
+            right = n.child_by_field_name("right")
+            if right:
+                ids = collect_identifiers(right)
+                assert "x" in ids, f"x should be in identifiers, got {ids}"
+                assert "escape" not in ids, (
+                    f"method name 'escape' should be skipped, got {ids}"
+                )
+                return
+    assert False, "No assignment found in code"
+
+
+def test_sanitizer_suffix_no_false_match():
+    """custom_module.escape() does NOT match html.escape sanitizer."""
+    code = "def f(x):\n    y = custom_module.escape(x)\n"
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".py", grammar=grammar)
+    state.active.define("x", _param_def("x"))
+    walk_body(func, grammar, state)
+
+    sanitizer_names = {s.name for s in state.sanitizers}
+    assert "custom_module.escape" not in sanitizer_names, (
+        f"custom_module.escape should not match html.escape, "
+        f"got sanitizers={sanitizer_names}"
+    )
+
+
 def test_branch_termination_return():
     """Branch ending in return doesn't merge its defs into the parent state."""
     code = (

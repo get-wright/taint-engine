@@ -8,6 +8,7 @@ backwards from sink variables to sources.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -274,6 +275,13 @@ def _find_vars_at_line(
         expr_text = node.text.decode()
         for arg_child in walk_tree(args_node):
             if arg_child.type == "identifier":
+                if (
+                    arg_child.parent
+                    and arg_child.parent.type == "keyword_argument"
+                    and arg_child
+                    == arg_child.parent.child_by_field_name("name")
+                ):
+                    continue
                 name = arg_child.text.decode()
                 if name not in seen:
                     seen.add(name)
@@ -372,6 +380,51 @@ def _reconstruct_dotted(member_node) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Source matching
+# ---------------------------------------------------------------------------
+
+
+def _is_source_in_node(source: str, node: object | None, expr: str) -> bool:
+    """Check whether *source* appears structurally in *node*.
+
+    When an AST node is available we walk it looking for actual attribute
+    accesses or call expressions that match the source pattern.  This avoids
+    false positives from substring matches inside string literals or
+    unrelated identifiers (e.g. ``"request.args"`` inside a string, or
+    ``validate_input()`` matching ``input()``).
+
+    Falls back to word-boundary regex when no AST node is available.
+    """
+    is_call_source = source.endswith("()")
+    source_name = source.rstrip("()")
+
+    if node is not None:
+        attr_types = {"attribute", "member_expression"}
+        call_types = {"call", "call_expression"}
+        for sub in walk_tree(node):
+            if is_call_source:
+                if sub.type in call_types:
+                    callee = get_full_callee(sub)
+                    if callee == source_name:
+                        return True
+            else:
+                if "." in source_name:
+                    if sub.type in attr_types:
+                        if sub.text.decode() == source_name:
+                            return True
+                else:
+                    if (
+                        sub.type == "identifier"
+                        and sub.text.decode() == source_name
+                    ):
+                        return True
+        return False
+
+    pattern = r"\b" + re.escape(source_name) + r"\b"
+    return bool(re.search(pattern, expr))
+
+
+# ---------------------------------------------------------------------------
 # Backward tracing
 # ---------------------------------------------------------------------------
 
@@ -442,7 +495,7 @@ def _trace_back(
         lang_rules = rules.for_extension(ext)
         if lang_rules:
             for source in lang_rules.sources:
-                if source in expr:
+                if _is_source_in_node(source, defn.node, expr):
                     return [
                         FlowStep(
                             variable=var,

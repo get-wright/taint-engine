@@ -46,12 +46,6 @@ class TaintRuleSet:
     def for_extension(self, ext: str) -> LanguageRules | None:
         return self._by_ext.get(ext)
 
-    def is_source(self, ext: str, dotted_name: str) -> bool:
-        rules = self._by_ext.get(ext)
-        if not rules:
-            return False
-        return dotted_name in rules.sources
-
     def is_call_sink(self, ext: str, callee: str) -> bool:
         rules = self._by_ext.get(ext)
         if not rules:
@@ -142,13 +136,25 @@ class TaintRuleSet:
     def _find_sanitizer_key(
         rules: LanguageRules, key: str,
     ) -> str | None:
-        """Find matching sanitizer key (exact or suffix) in rules.sanitizers."""
+        """Find matching sanitizer key (exact or suffix) in rules.sanitizers.
+
+        For dotted callees (e.g. ``custom_module.escape``), suffix matching
+        only triggers when the suffix key is a standalone bare name, not one
+        derived from a different dotted rule.  This prevents
+        ``custom_module.escape`` from matching the ``escape`` suffix that
+        originated from the ``html.escape`` rule.
+        """
         if key in rules.sanitizers:
             return key
         if "." in key:
             suffix = key.rsplit(".", 1)[-1]
             if suffix in rules.sanitizers:
-                return suffix
+                has_dotted_origin = any(
+                    "." in k and k.rsplit(".", 1)[-1] == suffix
+                    for k in rules.sanitizers
+                )
+                if not has_dotted_origin:
+                    return suffix
         return None
 
 

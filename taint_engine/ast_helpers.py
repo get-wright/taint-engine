@@ -65,11 +65,43 @@ def get_member_object(member_node) -> str:
 
 
 def collect_identifiers(node) -> set[str]:
-    """Collect all identifier names in a subtree."""
+    """Collect all identifier names in a subtree, excluding callee names.
+
+    Skips identifiers that serve as function names in calls:
+    - Simple callees (``len`` in ``len(x)``)
+    - Method names in dotted callees (``escape`` in ``html.escape(x)``)
+
+    Object references in dotted callees are kept because they may be
+    data dependencies (e.g. ``url`` in ``url.split("/")``).
+    """
+    _call_types = {"call", "call_expression"}
+    _attr_types = {"attribute", "member_expression"}
     ids: set[str] = set()
     for n in walk_tree(node):
-        if n.type == "identifier":
+        if n.type != "identifier":
+            continue
+        parent = n.parent
+        if parent is None:
             ids.add(n.text.decode())
+            continue
+        if (
+            parent.type in _call_types
+            and n == parent.child_by_field_name("function")
+        ):
+            continue
+        if parent.type in _attr_types:
+            gp = parent.parent
+            if (
+                gp is not None
+                and gp.type in _call_types
+                and parent == gp.child_by_field_name("function")
+                and (
+                    n == parent.child_by_field_name("attribute")
+                    or n == parent.child_by_field_name("property")
+                )
+            ):
+                continue
+        ids.add(n.text.decode())
     return ids
 
 
