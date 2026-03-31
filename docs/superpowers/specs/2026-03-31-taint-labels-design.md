@@ -65,22 +65,7 @@ Example: `html.escape` → `json.dumps` → HTML sink.
 
 ## Rule Schema
 
-### Current format (backward compatible)
-
-```json
-{
-  "sources": ["request.args", "request.form"],
-  "sinks": {
-    "call": ["eval", "cursor.execute"],
-    "property": ["innerHTML"]
-  },
-  "sanitizers": [
-    { "name": "html.escape", "neutralizes": ["CWE-79"] }
-  ]
-}
-```
-
-### New format
+### Format
 
 ```json
 {
@@ -179,15 +164,14 @@ Example: `html.escape` → `json.dumps` → HTML sink.
 - If `accepts` is empty (like `eval`), no state is ever safe — nothing can sanitize `eval`.
 - If `accepts` is absent, no state checking — existing behavior.
 
-### Backward compatibility
+### Loader behavior
 
-| Old format | Interpretation |
-|---|---|
-| `"sources"` is a `list[str]` | Used as-is (flat source set) |
-| `"sources"` is a `dict[str, list]` (new format) | Keys are extracted as the flat source set; label values are stored but reserved for future use |
-| `"sinks"` has flat `"call"` / `"property"` keys | Populate `call_sinks` / `property_sinks` as before; label detection returns `None`; no state checking |
-| Sanitizer has `"neutralizes"` but no `"removes"` or `"sets_state"` | Treated as removing all labels, setting state `"sanitized"` (universal) |
-| No `"transformers"` key | No state transitions — existing behavior |
+The loader reads the new format directly:
+- `sources`: dict keys become the flat `sources` frozenset; label values stored for future use.
+- `sinks`: labeled keys with `call`/`property`/`accepts` sub-keys. Flatten all `call` and `property` entries into `call_sinks`/`property_sinks`. Store full structure as `labeled_sinks`.
+- `sanitizers`: each entry has `name`, `removes`, `sets_state`. Build both the existing `sanitizers` map (name → `["*"]` stub) and new `sanitizer_labels`/`sanitizer_states` maps.
+- `transformers`: stored as `transformers` map (name → sets_state).
+- Old format is not supported — all rule JSON files must be updated.
 
 ## Label and State Detection
 
@@ -316,7 +300,7 @@ preserves backward compatibility — `_find_vars_at_line()` Pass 3 still calls
 class SanitizerInfo:
     name: str
     line: int
-    cwe_categories: list[str]                    # kept for backward compat
+    cwe_categories: list[str]                    # deprecated, set to ["*"]
     conditional: bool
     verified: bool
     removes: list[str] = field(default_factory=lambda: ["*"])  # NEW: taint labels
@@ -497,15 +481,16 @@ When sanitization is effective:
 | `taint_engine/rules/php.json` | Same structural changes |
 | `taint_engine/rules/__init__.py` | Load new fields, backward-compat loader, new `LanguageRules` fields, new query methods |
 | `taint_engine/models.py` | `SanitizerInfo`: add `removes`, `sets_state`, `effective`, `invalidated_by`; add `TransformerInfo`; `TaintFlow`: add `active_label`, `transformers`, `final_state` |
-| `taint_engine/engine.py` | `trace_taint_flow()`: add `label` param, label detection, state-checking post-processing; `_find_vars_at_line()`: return `sink_identifier` |
-| `taint_engine/walker.py` | `_check_sanitizer()` populates `removes`/`sets_state`; new `_check_transformer()`; `WalkState` gets `transformers` list |
+| `taint_engine/engine.py` | `trace_taint_flow()`: add `label` param, label detection, state-checking post-processing; `_find_vars_at_line()`: return `sink_identifier`, skip keyword arg names (Fix 12); `_trace_back()`: replace substring source match with AST match (Fix 4) |
+| `taint_engine/walker.py` | `_check_sanitizer()` populates `removes`/`sets_state`; new `_check_transformer()`; `WalkState` gets `transformers` list; new `_handle_try()` (Fix 1); augmented assignment self-dep (Fix 2); `with_statement` handling (Fix 3); path-scoped sanitizers (Fix 5); walrus operator (Fix 6); `switch`/`match` (Fix 7); `*args`/`**kwargs` (Fix 8); subscript assignment (Fix 9); `collect_identifiers` filtering (Fix 10); branch termination (Fix 11); C-style for init (Fix 14); fork mutable lists (Fix 16) |
+| `taint_engine/ast_helpers.py` | `collect_identifiers` improvements for Fix 10 (skip callee names) |
 | `taint_engine/cli/cmd_trace.py` | Accept `--label` CLI flag, pass to engine |
 | `taint_engine/cli/formatters/text.py` | Show state chain, effective/ineffective sanitizers |
 | `taint_engine/cli/formatters/json_fmt.py` | Include new fields |
 | `taint_engine/cli/formatters/sarif.py` | Include label, state, transformers in SARIF |
-| `tests/test_taint_engine.py` | Tests for label matching + state acceptance |
-| `tests/test_taint_walker.py` | Tests for transformer detection, `sets_state` population |
-| `tests/test_taint_rules.py` | Tests for new rule format + backward compat |
+| `tests/test_taint_engine.py` | Tests for label matching + state acceptance; source match false positive tests (Fix 4); keyword arg filtering (Fix 12) |
+| `tests/test_taint_walker.py` | Tests for transformer detection, `sets_state` population; try/except (Fix 1); augmented assignment (Fix 2); with statement (Fix 3); path-scoped sanitizers (Fix 5); walrus (Fix 6); switch/match (Fix 7); *args (Fix 8); subscript (Fix 9); collect_identifiers (Fix 10); branch termination (Fix 11); C-style for (Fix 14) |
+| `tests/test_taint_rules.py` | Tests for new rule format loading |
 | `tests/test_taint_models.py` | Tests for new dataclass serialization |
 
 ## Test Scenarios
@@ -580,6 +565,194 @@ taint-trace trace app.py:42 --label sql
 ```
 Forces `active_label = "sql"` regardless of sink expression.
 
+## Engine Correctness Fixes
+
+These are pre-existing engine issues discovered during audit. They are included
+in this spec because the walker and engine changes for taint labels touch the same
+code paths, and fixing them together avoids double-touching files.
+
+### Fix 1: `try/except` handlers never walked (Critical)
+
+`try_statement` is in `conditional_types`, but `_handle_conditional` only looks for
+`consequence`/`body` and `alternative` fields. Python's except handlers, else clause,
+and finally clause are silently skipped. Any code inside `except` blocks is invisible.
+
+```python
+def f(user_input):
+    try:
+        result = process(user_input)
+    except Exception as e:
+        cursor.execute(user_input)  # this sink is never analyzed
+```
+
+**Fix**: Add `_handle_try()` that walks: try body, each except handler (capturing
+`as` bindings as definitions), optional else clause, and finally clause. Fork and
+merge each branch. Remove `try_statement` from `conditional_types`.
+
+### Fix 2: Augmented assignment loses self-dependency (High)
+
+`x += y` is treated as `x = y`, losing the dependency on `x`'s prior value.
+`define()` kills the old definition of `x`.
+
+```python
+def f(a, b):
+    x = a
+    x += b      # walker sees deps={b}, kills x->a
+    sink(x)     # traces to b, misses a
+```
+
+**Fix**: In `_handle_assignment`, detect augmented assignments (node type contains
+"augmented") and add the LHS variable name to `rhs_ids` so the new definition
+depends on both the old value and the RHS.
+
+### Fix 3: `with` statements completely ignored (High)
+
+The walker has no case for `with_statement`. Bodies and `as` bindings are skipped.
+
+```python
+def f(user_path):
+    with open(user_path) as fh:
+        content = fh.read()
+    cursor.execute(content)  # content has no reaching def
+```
+
+**Fix**: Add `with_statement` handling in `_walk_stmts`. Extract the `as` binding
+as a definition (deps = identifiers in the context expression). Walk the body.
+
+### Fix 4: Source detection uses substring match (High)
+
+`_trace_back` checks `if source in expr` — a substring match on the full expression
+text. This false-matches inside string literals and similar function names.
+
+```python
+def f():
+    x = "mentions request.args in a string"
+    cursor.execute(x)  # falsely tainted
+```
+
+```python
+def f():
+    my_input = validate_input()  # "input()" matches in "validate_input()"
+    cursor.execute(my_input)     # falsely tainted
+```
+
+**Fix**: Replace substring match with AST-structural matching. Walk the RHS AST to
+find member-access chains or call nodes that structurally match source patterns.
+At minimum, use word-boundary matching (e.g., check that `request.args` appears
+as a standalone identifier chain, not inside a larger name).
+
+### Fix 5: Sanitizers are function-scoped, not path-scoped (High)
+
+Sanitizers are collected into a flat list on `WalkState` and attached to every
+`TaintFlow`, regardless of which variable they apply to.
+
+```python
+def f(user_input, other_input):
+    safe = html.escape(user_input)
+    cursor.execute(other_input)  # flow for other_input includes html.escape
+```
+
+**Fix**: Record which variable a sanitizer applies to (the LHS of the assignment
+containing the sanitizer call). When building `TaintFlow`, only include sanitizers
+whose target variable appears in the flow path. This also fixes the transformer
+path-scoping issue for the flow-state feature.
+
+### Fix 6: Walrus operator (`:=`) not handled (Medium)
+
+Python 3.8+ `named_expression` nodes are not in `assignment_types` and not
+processed by the walker. Variables defined via `:=` have no reaching definitions.
+
+```python
+def f(request):
+    if (data := request.args.get("q")):
+        cursor.execute(data)  # data has no reaching def
+```
+
+**Fix**: Add `named_expression` handling — extract `name` and `value` fields,
+create a definition.
+
+### Fix 7: `switch`/`match` statements not handled (Medium)
+
+JS `switch_statement` and Python 3.10+ `match_statement` are not in
+`conditional_types`. Case bodies are never walked.
+
+**Fix**: Add dedicated handlers with fork-merge per case/match arm.
+
+### Fix 8: `*args` and `**kwargs` not extracted as parameters (Medium)
+
+`_extract_parameters` doesn't handle `list_splat_pattern` or
+`dictionary_splat_pattern`.
+
+**Fix**: Extract the identifier child from these node types.
+
+### Fix 9: Subscript assignments silently dropped (Medium)
+
+`data["key"] = value` produces a subscript LHS that `_extract_assignment` ignores.
+
+**Fix**: Handle subscript LHS by extracting the base object name and treating it
+as a mutating assignment (merge deps, don't kill old defs).
+
+### Fix 10: `collect_identifiers` over-collects (Medium)
+
+Every identifier in the RHS subtree is collected as a dependency, including
+function names in calls (`len`, `str`) and keyword argument names. This means
+`len(tainted)` makes the result depend on the tainted value even though `len()`
+returns an integer.
+
+**Fix**: Skip identifiers that are the callee of a call (the function name itself
+isn't a data dependency). For taint-destroying functions like `len`, `type`,
+`bool`, `id` — add a `taint_killers` list in rules; if the RHS is a call to one
+of these, don't propagate deps from arguments.
+
+### Fix 11: `return`/`raise` don't terminate branch analysis (Medium)
+
+After `return` or `raise`, the walker continues processing subsequent statements.
+Definitions from dead code remain active and contribute to branch merges.
+
+**Fix**: Track whether a block terminates. If the true branch of an `if` ends with
+`return`/`raise`, the post-if state should be the false-branch state only (not a
+merge). This enables correct handling of "early return" guard patterns.
+
+### Fix 12: `_find_vars_at_line` collects keyword argument names (Low)
+
+Pass 1 walks argument nodes and collects keyword names as sink variables.
+`requests.get(url, timeout=5)` yields both `url` and `timeout`.
+
+**Fix**: When walking arguments, skip identifier children in the `name` field
+position of `keyword_argument` nodes.
+
+### Fix 13: `TaintRuleSet.is_source()` is dead code (Low)
+
+The method exists but is never called. Actual source detection uses substring
+match in `_trace_back`.
+
+**Fix**: Remove the dead method, or replace the substring match with calls to it
+(aligned with Fix 4).
+
+### Fix 14: C-style JS `for` loop initializers not walked (Medium)
+
+`_handle_loop` looks for `left`/`right` fields but C-style `for` loops use
+`initializer`/`condition`/`increment` children.
+
+**Fix**: Extract and walk the initializer as a statement before the loop body.
+Walk the increment after each loop pass.
+
+### Fix 15: Sanitizer suffix indexing false-matches (Medium)
+
+`html.escape` registers suffix `escape`. Any `custom_module.escape()` matches.
+
+**Fix**: Only apply suffix matching when the full callee lookup fails AND the bare
+name is an exact entry in the sanitizer rules (not a suffix of another entry).
+Or make suffix indexing opt-in per sanitizer rule.
+
+### Fix 16: Shared mutable lists across conditional forks (Medium)
+
+`_handle_conditional` reuses the parent's `sanitizers`, `guards`, and `unresolved`
+lists in the forked state. This makes path-scoped tracking impossible.
+
+**Fix**: Fork these lists (shallow copy) when creating branch states. Merge them
+at the join point. This is prerequisite for Fix 5 (path-scoped sanitizers).
+
 ## Known Limitations
 
 - **Sanitizers and transformers are function-scoped, not path-scoped.** The walker
@@ -609,4 +782,6 @@ Forces `active_label = "sql"` regardless of sink expression.
 - Full forward flow-state tracking (CodeQL-style `StateConfigSig` with per-node state sets)
 - CWE-to-label mapping — labels come from sink matching only
 - Automatic transformer detection
-- Branch-sensitive state tracking (conditional state changes)
+- Backward compatibility with old rule format — all rule JSON files are rewritten
+- Interprocedural analysis (cross-function taint within a single file)
+- Rule content changes (missing sources, language-specific additions) — separate effort
