@@ -74,5 +74,6 @@
     { "name": "json.loads",                "sets_state": "parsed-object" },
     { "name": "json.dumps",               "sets_state": "json-string" }
   ],
-  "guards": ["re.match", "re.fullmatch", "isinstance", "hasattr", "urlsplit"]
+  "guards": ["re.match", "re.fullmatch", "isinstance", "hasattr", "urlsplit"],
+  "subscript_accessors": ["get", "pop", "getlist", "getattr"]
 }

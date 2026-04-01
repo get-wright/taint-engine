@@ -35,6 +35,7 @@ class LanguageRules:
     sanitizer_labels: MappingProxyType[str, list[str]] | None = None
     sanitizer_states: MappingProxyType[str, str] | None = None
     transformers: MappingProxyType[str, str] | None = None
+    subscript_accessors_list: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -69,8 +70,16 @@ class TaintRuleSet:
         if match is None:
             return None
 
-        removes = list(rules.sanitizer_labels.get(match, ["*"])) if rules.sanitizer_labels else ["*"]
-        sets_state = rules.sanitizer_states.get(match, "sanitized") if rules.sanitizer_states else "sanitized"
+        removes = (
+            list(rules.sanitizer_labels.get(match, ["*"]))
+            if rules.sanitizer_labels
+            else ["*"]
+        )
+        sets_state = (
+            rules.sanitizer_states.get(match, "sanitized")
+            if rules.sanitizer_states
+            else "sanitized"
+        )
 
         return SanitizerInfo(
             name=callee,
@@ -104,7 +113,9 @@ class TaintRuleSet:
         return sink_def.get("accepts")
 
     def check_transformer(
-        self, ext: str, callee: str,
+        self,
+        ext: str,
+        callee: str,
     ) -> tuple[str, str] | None:
         """Look up a transformer. Returns (canonical_name, sets_state) or None."""
         rules = self._by_ext.get(ext)
@@ -132,9 +143,16 @@ class TaintRuleSet:
             return False
         return callee in rules.guards
 
+    def subscript_accessors(self, ext: str) -> list[str]:
+        rules = self._by_ext.get(ext)
+        if not rules:
+            return []
+        return list(rules.subscript_accessors_list)
+
     @staticmethod
     def _find_sanitizer_key(
-        rules: LanguageRules, key: str,
+        rules: LanguageRules,
+        key: str,
     ) -> str | None:
         """Find matching sanitizer key (exact or suffix) in rules.sanitizers.
 
@@ -211,6 +229,7 @@ def _merge(raw_rules: list[dict]) -> TaintRuleSet:
                     "sanitizer_labels": {},
                     "sanitizer_states": {},
                     "transformers": {},
+                    "subscript_accessors": [],
                 }
             entry = acc[ext]
 
@@ -282,6 +301,12 @@ def _merge(raw_rules: list[dict]) -> TaintRuleSet:
 
             entry["guards"].update(rule.get("guards", []))
 
+            entry["subscript_accessors"].extend(
+                a
+                for a in rule.get("subscript_accessors", [])
+                if a not in entry["subscript_accessors"]
+            )
+
     by_ext: dict[str, LanguageRules] = {}
     for ext, entry in acc.items():
         by_ext[ext] = LanguageRules(
@@ -295,6 +320,7 @@ def _merge(raw_rules: list[dict]) -> TaintRuleSet:
             sanitizer_labels=MappingProxyType(entry["sanitizer_labels"]) or None,
             sanitizer_states=MappingProxyType(entry["sanitizer_states"]) or None,
             transformers=MappingProxyType(entry["transformers"]) or None,
+            subscript_accessors_list=tuple(entry["subscript_accessors"]),
         )
 
     return TaintRuleSet(_by_ext=by_ext)

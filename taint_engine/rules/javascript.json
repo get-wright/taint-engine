@@ -82,5 +82,6 @@
     "typeof", "instanceof",
     "Number.isFinite", "Number.isInteger", "Array.isArray",
     "validator.isEmail", "validator.isURL"
-  ]
+  ],
+  "subscript_accessors": ["get", "getAll"]
 }

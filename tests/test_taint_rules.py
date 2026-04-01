@@ -435,3 +435,30 @@ def test_load_new_format_temp_file(tmp_path):
     assert "escaped" in accepted
 
     assert ruleset.is_guard(".test", "check") is True
+
+
+# ---------------------------------------------------------------------------
+# Subscript accessors
+# ---------------------------------------------------------------------------
+
+
+def test_subscript_accessors_python():
+    ruleset = load_rules(RULES_DIR)
+    accessors = ruleset.subscript_accessors(".py")
+    assert "get" in accessors
+    assert "pop" in accessors
+    assert "getlist" in accessors
+    assert "getattr" in accessors
+
+
+def test_subscript_accessors_js():
+    ruleset = load_rules(RULES_DIR)
+    accessors = ruleset.subscript_accessors(".js")
+    assert "get" in accessors
+    assert "getAll" in accessors
+
+
+def test_subscript_accessors_unknown_ext():
+    ruleset = load_rules(RULES_DIR)
+    accessors = ruleset.subscript_accessors(".unknown")
+    assert accessors == []
