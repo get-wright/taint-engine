@@ -756,3 +756,20 @@ def test_walk_subscript_accessor_pop():
     dep = next(iter(next(iter(p_defs)).deps))
     assert dep.base == "data"
     assert any(s.kind == "subscript" and s.name == "key" for s in dep.selectors)
+
+
+def test_walk_destructuring_js():
+    """const { query } = req should produce dep with field selector."""
+    code = "function f(req) {\n    const { query } = req;\n}\n"
+    func = _parse_js(code)
+    grammar = JS_GRAMMAR
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".js", grammar=grammar)
+    state.active.define("req", _param_def("req"))
+    walk_body(func, grammar, state)
+
+    q_defs = state.active.reaching("query")
+    assert len(q_defs) == 1
+    dep = next(iter(next(iter(q_defs)).deps))
+    assert dep.base == "req"
+    assert dep.selectors == (Selector("field", "query"),)

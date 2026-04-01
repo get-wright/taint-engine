@@ -168,8 +168,64 @@ def _handle_expression_statement(stmt, grammar, state, assignment_types, call_ty
             _handle_mutating_call(child, grammar, state)
 
 
+def _handle_destructuring_assignment(
+    pattern_node, value_node, context_node, grammar, state: WalkState,
+) -> None:
+    """Handle destructuring assignment with field-aware deps."""
+    line = context_node.start_point[0] + 1
+    expr_text = context_node.text.decode()
+
+    # Resolve the RHS value to an AccessPath
+    rhs_path = _resolve_expression_path(
+        value_node, grammar, state.rules, state.ext,
+    )
+
+    for var_name, _val_node, field_name in _extract_destructuring(
+        pattern_node, value_node,
+    ):
+        if not var_name:
+            continue
+
+        if rhs_path is not None and field_name is not None:
+            dep = rhs_path.with_field(field_name)
+        elif rhs_path is not None:
+            dep = rhs_path
+        else:
+            dep = AccessPath.from_identifier(value_node.text.decode())
+
+        defn = Definition(
+            variable=AccessPath(var_name, ()),
+            line=line,
+            expression=expr_text,
+            node=context_node,
+            deps=frozenset({dep}),
+            branch_context="",
+        )
+        state.active.define(var_name, defn)
+
+    # Check RHS calls for sanitizers
+    call_types = set(grammar.call_types)
+    for call_node in find_calls_in(value_node, call_types):
+        _check_sanitizer(call_node, line, context_node, grammar, state)
+        _check_transformer(call_node, line, grammar, state)
+
+
 def _handle_assignment(node, grammar, state: WalkState) -> None:
     """Process an assignment, record definition, check for sanitizers."""
+    # Check for JS destructuring — handle specially for field-aware deps
+    if node.type == "variable_declarator":
+        name_node = node.child_by_field_name("name")
+        value_node = node.child_by_field_name("value")
+        if (
+            name_node
+            and name_node.type in ("object_pattern", "array_pattern")
+            and value_node
+        ):
+            _handle_destructuring_assignment(
+                name_node, value_node, node, grammar, state,
+            )
+            return
+
     pairs = _extract_assignment(node, grammar)
     if not pairs:
         return
@@ -781,14 +837,20 @@ def _define_loop_variable(node, grammar, state: WalkState) -> None:
                 state.active.define(var_name, defn)
     # JS destructuring in loop: for (const { a, b } of items)
     elif left.type in ("object_pattern", "array_pattern"):
-        for pair in _extract_destructuring(left, right):
-            var_name, _ = pair
+        for var_name, _, field_name in _extract_destructuring(left, right):
+            if field_name is not None:
+                dep = AccessPath.from_identifier(
+                    right.text.decode(),
+                ).with_field(field_name)
+                deps = frozenset({dep})
+            else:
+                deps = iterable_ids
             defn = Definition(
                 variable=AccessPath(var_name, ()),
                 line=line,
                 expression=expr_text,
                 node=node,
-                deps=iterable_ids,
+                deps=deps,
                 branch_context="loop",
             )
             state.active.define(var_name, defn)
@@ -1022,7 +1084,10 @@ def _extract_assignment(node, grammar) -> list[tuple[str, object | None]]:
             return [(name_node.text.decode(), value_node)]
         # JS destructuring: object_pattern or array_pattern
         if name_node.type in ("object_pattern", "array_pattern"):
-            return _extract_destructuring(name_node, value_node)
+            return [
+                (name, val)
+                for name, val, _field in _extract_destructuring(name_node, value_node)
+            ]
         return []
 
     left = node.child_by_field_name("left")
@@ -1057,27 +1122,37 @@ def _extract_assignment(node, grammar) -> list[tuple[str, object | None]]:
     return []
 
 
-def _extract_destructuring(pattern_node, value_node) -> list[tuple[str, object | None]]:
-    """Extract variable names from JS object_pattern or array_pattern."""
-    results = []
+def _extract_destructuring(
+    pattern_node, value_node,
+) -> list[tuple[str, object | None, str | None]]:
+    """Extract variable names from JS object_pattern or array_pattern.
+
+    Returns (var_name, value_node, field_name) triples. field_name is the
+    property name being destructured (for object patterns) or None (arrays).
+    """
+    results: list[tuple[str, object | None, str | None]] = []
     for child in pattern_node.children:
         if child.type == "identifier":
-            results.append((child.text.decode(), value_node))
+            # { x } — shorthand, field name == var name
+            results.append((child.text.decode(), value_node, child.text.decode()))
         elif child.type == "shorthand_property_identifier_pattern":
-            results.append((child.text.decode(), value_node))
+            name = child.text.decode()
+            results.append((name, value_node, name))
         elif child.type == "pair_pattern":
-            # { key: value } — the value is the binding
+            # { key: value } — field name is key, binding is value
+            key_node = child.child_by_field_name("key")
             val = child.child_by_field_name("value")
+            field = key_node.text.decode() if key_node else None
             if val and val.type == "identifier":
-                results.append((val.text.decode(), value_node))
+                results.append((val.text.decode(), value_node, field))
         elif child.type == "assignment_pattern":
             # { x = default } or [x = default]
             left = child.child_by_field_name("left")
             if left and left.type == "identifier":
-                results.append((left.text.decode(), value_node))
+                results.append((left.text.decode(), value_node, left.text.decode()))
         elif child.type == "rest_pattern":
-            # ...rest
+            # ...rest — no specific field
             for sub in child.children:
                 if sub.type == "identifier":
-                    results.append((sub.text.decode(), value_node))
+                    results.append((sub.text.decode(), value_node, None))
     return results

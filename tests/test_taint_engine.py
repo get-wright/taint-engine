@@ -763,3 +763,45 @@ def test_alias_chain_recovery():
     assert flow is not None
     assert flow.source.kind in ("source", "parameter")
     assert not any("hardcoded" in f.lower() for f in flow.confidence_factors)
+
+
+def test_destructured_redirect_js():
+    flow = trace_taint_flow(
+        file_path=os.path.join(FIXTURES, "taint_source_recovery.js"),
+        function_name="destructuredRedirect",
+        sink_line=6,
+        check_id="javascript.redirect",
+        cwe_list=["CWE-601"],
+        rules=RULES,
+        parser=PARSER,
+    )
+    assert flow is not None
+    assert flow.source.kind in ("source", "parameter")
+
+
+def test_destructured_file_serve_js():
+    flow = trace_taint_flow(
+        file_path=os.path.join(FIXTURES, "taint_source_recovery.js"),
+        function_name="destructuredFileServe",
+        sink_line=12,
+        check_id="javascript.path",
+        cwe_list=["CWE-22"],
+        rules=RULES,
+        parser=PARSER,
+    )
+    assert flow is not None
+    assert flow.source.kind in ("source", "parameter")
+
+
+def test_direct_member_sink_js():
+    flow = trace_taint_flow(
+        file_path=os.path.join(FIXTURES, "taint_source_recovery.js"),
+        function_name="directMemberSink",
+        sink_line=16,
+        check_id="javascript.redirect",
+        cwe_list=["CWE-601"],
+        rules=RULES,
+        parser=PARSER,
+    )
+    assert flow is not None
+    assert flow.source.kind in ("source", "parameter")
