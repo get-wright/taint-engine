@@ -744,7 +744,7 @@ def _trace_back(
         # Recurse into dependencies
         for dep in defn.deps:
             sub_path = _trace_back(
-                dep,
+                dep.name,  # AccessPath.name → str for now
                 active,
                 params,
                 rules,

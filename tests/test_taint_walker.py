@@ -161,7 +161,7 @@ def test_walk_tuple_unpacking():
     assert len(repo_defs) >= 1, "repo should have a reaching def from tuple unpacking"
     # Both should depend on x
     for d in owner_defs:
-        assert "x" in d.deps, f"owner def should depend on x, got deps={d.deps}"
+        assert AccessPath.from_identifier("x") in d.deps, f"owner def should depend on x, got deps={d.deps}"
 
 
 def test_walk_for_loop_variable():
@@ -179,7 +179,7 @@ def test_walk_for_loop_variable():
         "entry should have a reaching def from for-loop binding"
     )
     # entry should depend on entries
-    any_dep_on_entries = any("entries" in d.deps for d in entry_defs)
+    any_dep_on_entries = any(AccessPath.from_identifier("entries") in d.deps for d in entry_defs)
     assert any_dep_on_entries, (
         f"entry should depend on entries, got {[d.deps for d in entry_defs]}"
     )
@@ -336,7 +336,7 @@ def test_try_except_as_binding():
     assert len(e_defs) >= 1, "e should have a reaching def from except-as binding"
     z_defs = state.active.reaching("z")
     assert len(z_defs) >= 1, "z should have a reaching def from except handler body"
-    any_dep_on_e = any("e" in d.deps for d in z_defs)
+    any_dep_on_e = any(AccessPath.from_identifier("e") in d.deps for d in z_defs)
     assert any_dep_on_e, f"z should depend on e, got {[d.deps for d in z_defs]}"
 
 
@@ -383,7 +383,7 @@ def test_with_as_binding():
     assert len(fh_defs) >= 1, "fh should have a reaching def from with-as binding"
     data_defs = state.active.reaching("data")
     assert len(data_defs) >= 1, "data should have a reaching def from with body"
-    any_dep_on_fh = any("fh" in d.deps for d in data_defs)
+    any_dep_on_fh = any(AccessPath.from_identifier("fh") in d.deps for d in data_defs)
     assert any_dep_on_fh, (
         f"data should depend on fh, got {[d.deps for d in data_defs]}"
     )
@@ -410,10 +410,10 @@ def test_augmented_assignment():
         f"x should have 1 reaching def after augmented assignment, got {len(x_defs)}"
     )
     defn = next(iter(x_defs))
-    assert "a" in defn.deps, (
+    assert AccessPath.from_identifier("a") in defn.deps, (
         f"x += b should carry forward dependency on a, got deps={defn.deps}"
     )
-    assert "b" in defn.deps, (
+    assert AccessPath.from_identifier("b") in defn.deps, (
         f"x += b should depend on b, got deps={defn.deps}"
     )
 
@@ -433,7 +433,7 @@ def test_walrus_operator():
     )
     y_defs = state.active.reaching("y")
     assert len(y_defs) >= 1, "y should have a reaching def from branch body"
-    any_dep_on_data = any("data" in d.deps for d in y_defs)
+    any_dep_on_data = any(AccessPath.from_identifier("data") in d.deps for d in y_defs)
     assert any_dep_on_data, (
         f"y should depend on data, got {[d.deps for d in y_defs]}"
     )
@@ -453,7 +453,7 @@ def test_subscript_assignment():
     assert len(d_defs) >= 2, (
         f"d should have defs from both init and subscript assign, got {len(d_defs)}"
     )
-    any_dep_on_val = any("val" in d.deps for d in d_defs)
+    any_dep_on_val = any(AccessPath.from_identifier("val") in d.deps for d in d_defs)
     assert any_dep_on_val, (
         f"d should depend on val, got {[d.deps for d in d_defs]}"
     )
@@ -573,7 +573,7 @@ def test_js_cstyle_for_initializer():
     assert len(x_defs) >= 1, (
         f"x should have a reaching def from loop body, got {len(x_defs)}"
     )
-    any_dep_on_i = any("i" in d.deps for d in x_defs)
+    any_dep_on_i = any(AccessPath.from_identifier("i") in d.deps for d in x_defs)
     assert any_dep_on_i, (
         f"x should depend on i, got {[d.deps for d in x_defs]}"
     )

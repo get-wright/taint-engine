@@ -33,7 +33,7 @@ class Definition:
     line: int
     expression: str
     node: object  # ASTNode or None (for parameters)
-    deps: frozenset[str]  # variable names this definition reads from
+    deps: frozenset[AccessPath]  # access paths this definition reads from
     branch_context: str  # "" | "if_true" | "if_false" | "loop"
 
     def __eq__(self, other: object) -> bool:
@@ -184,13 +184,18 @@ def _handle_assignment(node, grammar, state: WalkState) -> None:
     for lhs_name, rhs_node in pairs:
         if not lhs_name or rhs_node is None:
             continue
-        rhs_ids = frozenset(collect_identifiers(rhs_node))
+        rhs_ids = frozenset(
+            AccessPath.from_identifier(name)
+            for name in collect_identifiers(rhs_node)
+        )
 
         if is_augmented:
-            old_deps: set[str] = set()
+            old_deps: set[AccessPath] = set()
             for old_defn in state.active.reaching(lhs_name):
                 old_deps.update(old_defn.deps)
-            rhs_ids = frozenset(set(rhs_ids) | old_deps | {lhs_name})
+            rhs_ids = frozenset(
+                set(rhs_ids) | old_deps | {AccessPath.from_identifier(lhs_name)}
+            )
 
         defn = Definition(
             variable=AccessPath(lhs_name, ()),
@@ -273,7 +278,10 @@ def _handle_walrus_in(subtree, grammar, state: WalkState) -> None:
             continue
         var_name = name_node.text.decode()
         rhs_ids = (
-            frozenset(collect_identifiers(value_node))
+            frozenset(
+                AccessPath.from_identifier(n)
+                for n in collect_identifiers(value_node)
+            )
             if value_node
             else frozenset()
         )
@@ -532,10 +540,13 @@ def _define_with_binding(with_item, with_node, grammar, state: WalkState) -> Non
                     context_node = sub
 
             if binding_name:
-                value_ids: frozenset[str] = frozenset()
+                value_ids: frozenset[AccessPath] = frozenset()
                 expr = "with-context"
                 if context_node:
-                    value_ids = frozenset(collect_identifiers(context_node))
+                    value_ids = frozenset(
+                        AccessPath.from_identifier(n)
+                        for n in collect_identifiers(context_node)
+                    )
                     expr = context_node.text.decode()
                 defn = Definition(
                     variable=AccessPath(binding_name, ()),
@@ -640,7 +651,7 @@ def _handle_update_expr(node, state: WalkState) -> None:
         line=line,
         expression=node.text.decode(),
         node=node,
-        deps=frozenset({var_name}),
+        deps=frozenset({AccessPath.from_identifier(var_name)}),
         branch_context="loop",
     )
     state.active.define(var_name, defn)
@@ -740,7 +751,9 @@ def _define_loop_variable(node, grammar, state: WalkState) -> None:
         return
 
     line = node.start_point[0] + 1
-    iterable_ids = frozenset(collect_identifiers(right))
+    iterable_ids = frozenset(
+        AccessPath.from_identifier(n) for n in collect_identifiers(right)
+    )
     expr_text = right.text.decode()
 
     # Single identifier loop variable
@@ -816,9 +829,11 @@ def _handle_mutating_call(call_node, grammar, state: WalkState) -> None:
     args_node = call_node.child_by_field_name(
         "arguments"
     ) or call_node.child_by_field_name("argument_list")
-    arg_ids: frozenset[str] = frozenset()
+    arg_ids: frozenset[AccessPath] = frozenset()
     if args_node:
-        arg_ids = frozenset(collect_identifiers(args_node))
+        arg_ids = frozenset(
+            AccessPath.from_identifier(n) for n in collect_identifiers(args_node)
+        )
 
     line = call_node.start_point[0] + 1
     expr_text = call_node.text.decode()
