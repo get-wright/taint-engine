@@ -18,6 +18,9 @@ CLAUDE.md
 docs/superpowers/
 docs/plans/
 
+# Internal instructions (agent-only)
+instructions/
+
 # Worktrees
 .worktrees/
 
