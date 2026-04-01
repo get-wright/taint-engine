@@ -39,9 +39,12 @@ New frozen dataclass in `models.py`:
 ```python
 @dataclass(frozen=True)
 class Selector:
-    kind: str   # "field" | "subscript" | "call_result"
+    kind: Literal["field", "subscript", "call_result"]
     name: str   # field name, subscript key, or callee name
 ```
+
+Only three valid `kind` values exist: `"field"` (property access), `"subscript"`
+(bracket/dict access), `"call_result"` (return value of a method call).
 
 ### AccessPath (enhanced)
 
@@ -63,7 +66,11 @@ normalization.
 
 ### Definition.deps
 
-Changes from `frozenset[str]` to `frozenset[AccessPath]`.
+Changes from `frozenset[str]` to `frozenset[AccessPath]`. Since `_trace_back()`
+now receives `var: AccessPath`, it iterates `defn.deps` to get `AccessPath`
+objects and passes each directly to recursive `_trace_back(dep, ...)` calls.
+The lookup into `ActiveDefs` happens inside `reaching_path(dep)`, which
+converts `dep.name` to the string key internally.
 
 ### FlowStep.variable
 
@@ -86,9 +93,12 @@ Same pattern as the existing `"guards"` list.
 Per language:
 - **Python:** `["get", "pop", "getlist", "getattr"]`
 - **JavaScript:** `["get", "getAll"]`
-- **Go:** `["Get", "Values"]`
-- **Java:** `["get", "getParameter", "getAttribute"]`
-- **PHP:** `["get", "all", "input"]`
+- **Go** (phase 2): `["Get", "Values"]`
+- **Java** (phase 2): `["get", "getParameter", "getAttribute"]`
+- **PHP** (phase 2): `["get", "all", "input"]`
+
+Go, Java, and PHP lists are deferred to phase 2 — the initial implementation
+focuses on Python and JavaScript/TypeScript.
 
 ### Accessor normalization
 
@@ -99,8 +109,8 @@ selector instead of a `call_result` selector.
 
 ### _resolve_expression_path()
 
-New helper in `walker.py` that extracts a canonical `AccessPath` from an
-expression AST node. Handles:
+New helper in `walker.py`. Signature: `_resolve_expression_path(node, grammar, rules, ext) -> AccessPath`.
+Extracts a canonical `AccessPath` from an expression AST node. Handles:
 
 - Identifiers → `AccessPath.from_identifier(name)`
 - Member access (`a.b`) → `AccessPath.from_dotted("a.b")`
@@ -108,14 +118,34 @@ expression AST node. Handles:
 - Unrecognized calls → `call_result` selector on the receiver
 - Subscript expressions (`a["b"]`) → `subscript` selector
 
+This function is the primary migration point in the walker. Currently,
+`_handle_assignment` calls `collect_identifiers(rhs_node)` to build
+`deps: frozenset[str]`. After migration, `_handle_assignment` calls
+`_resolve_expression_path(rhs_node, ...)` to produce `frozenset[AccessPath]`
+for `Definition.deps`. For expressions with multiple value-contributing
+sub-expressions (e.g. `a + b`), the walker collects one `AccessPath` per
+sub-expression. `collect_identifiers` is still used as a fallback for
+expression forms that `_resolve_expression_path` doesn't handle.
+
 ### Destructuring alias preservation
 
-For `const { query } = req`, the walker creates:
-- `query` depends on `AccessPath("req", (Selector("field","query"),))`
+The current `_extract_destructuring()` in `walker.py` extracts
+`(child.text.decode(), value_node)` pairs but does not preserve the property
+name mapping back to the source object. This must change:
 
-For `const file = params.file`, the walker creates:
+For `const { query } = req`, `_extract_destructuring()` now returns
+`(name, value_node, field_name)` triples where `field_name` is the property
+being destructured. `_handle_assignment` uses `field_name` to construct the
+dep as `AccessPath("req", (Selector("field","query"),))` instead of a plain
+`AccessPath("req", ())`.
+
+For `const file = params.file` (not destructuring — plain member access),
+the walker creates:
 - `file` depends on `AccessPath("params.file")` which is
   `AccessPath("params", (Selector("field","file"),))`
+
+This is handled by the normal `_resolve_expression_path()` path, not by
+destructuring.
 
 ### TaintRuleSet changes
 
@@ -127,8 +157,10 @@ For `const file = params.file`, the walker creates:
 
 ### Signature change
 
-`_trace_back()` receives `var: AccessPath` instead of `str`. The initial call
-from `trace_taint_flow()` wraps sink vars using `AccessPath.from_dotted()`.
+`_trace_back()` receives `var: AccessPath` instead of `str`. Since
+`_find_vars_at_line()` now returns `AccessPath` objects directly (see Section 4),
+the call site in `trace_taint_flow()` passes the `AccessPath` through without
+additional wrapping.
 
 ### Prefix matching in ActiveDefs
 
@@ -162,11 +194,14 @@ res.redirect(toUrl)        // sink var: toUrl
 
 Trace:
 1. `trace_back(AccessPath("query.to"), accumulated=())`
-2. Prefix match `query`, remaining=`(field:to)`
+   — `AccessPath.from_dotted("query.to")` = `AccessPath("query", (Selector("field","to"),))`
+2. `reaching_path(...)`: try exact key `"query.to"` — no match; drop last
+   selector, try `"query"` — match. remaining=`(field:to)`
 3. `query` deps → `AccessPath("req.query")`
 4. Recurse: `trace_back(AccessPath("req.query"), accumulated=(field:to))`
-5. Prefix match `req` (parameter), remaining=`(field:query)`
-6. Effective = `(field:query, field:to)` → `req.query.to`
+5. `reaching_path(...)`: try exact key `"req.query"` — no match; drop last
+   selector, try `"req"` — match (parameter). remaining=`(field:query)`
+6. Effective = `(field:query) + (field:to)` → `req.query.to`
 7. Source rule `req.query` is prefix → match
 
 ### Visited set
@@ -229,8 +264,13 @@ New extraction cases in the call-argument walk:
   `AccessPath("request.args[\"next\"]")`
 - **Call-result arguments:** `si.getvalue()` (not a recognized accessor) →
   `AccessPath("si", (Selector("call_result","getvalue"),))`
-- **Compound expressions:** `x or y`, `x || y` → extract variables from both
-  operands as separate entries. The existing best-flow selection loop handles
+- **Compound expressions:** `x or y`, `x || y` → decompose into operands
+  first, then apply accessor normalization / call-result extraction to each
+  operand independently. For `request.args.get('next') or url_for('main.index')`:
+  (1) split into `request.args.get('next')` and `url_for('main.index')`,
+  (2) normalize the first operand to `AccessPath("request.args[\"next\"]")`,
+  (3) extract the second as `AccessPath("url_for", (call_result:url_for,))`.
+  Both become separate entries. The existing best-flow selection loop handles
   picking the tainted one.
 
 ## Section 5: Testing
@@ -308,7 +348,7 @@ Tests skip when eval repo files are absent.
 | `taint_engine/walker.py` | Migrate `Definition.deps` to `frozenset[AccessPath]`, add `_resolve_expression_path()`, accessor normalization, destructuring alias preservation, `ActiveDefs.reaching_path()` |
 | `taint_engine/engine.py` | `_trace_back()` takes `AccessPath` + `accumulated_selectors`, add `_match_source_by_path()`, update `_find_vars_at_line()` return type + sink expression decomposition |
 | `taint_engine/ast_helpers.py` | Possible new helpers for expression path resolution |
-| `taint_engine/rules/__init__.py` | Load `subscript_accessors` field, add accessor |
+| `taint_engine/rules/__init__.py` | Load `subscript_accessors` field, add `subscript_accessors(ext) -> list[str]` method to `TaintRuleSet` |
 | `taint_engine/rules/python.json` | Add `"subscript_accessors"` list |
 | `taint_engine/rules/javascript.json` | Add `"subscript_accessors"` list |
 | `taint_engine/rules/go.json` | Add `"subscript_accessors"` list |
@@ -349,3 +389,9 @@ Tests skip when eval repo files are absent.
 | 9 | simple-login redirect | `request.url` member read | Prefix matching on parameter |
 | 10 | simple-login call-result | `si.getvalue()` in sink arg | Sink-side call-result extraction |
 | 11 | Django password | `validated_data.pop('password')` | Accessor normalization + prefix |
+
+**Note on example #4:** This example uses an anonymous route callback. The
+access-path improvements only help if `_find_function_node()` can locate the
+handler. If the current engine cannot find anonymous callbacks, that is a
+separate prerequisite not addressed by this spec. The eval harness with `xfail`
+will surface this if it occurs.
