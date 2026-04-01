@@ -731,7 +731,7 @@ def _trace_back(
     if max_depth <= 0:
         return None
 
-    var_path = AccessPath.from_dotted(var)
+    var_path = AccessPath.parse(var)
 
     # Base case: var is a parameter
     base_name = var_path.base

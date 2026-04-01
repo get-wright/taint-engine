@@ -447,6 +447,60 @@ def test_access_path_chained_fields():
     assert len(p.selectors) == 2
 
 
+def test_access_path_parse_simple():
+    p = AccessPath.parse("x")
+    assert p.base == "x"
+    assert p.selectors == ()
+
+
+def test_access_path_parse_dotted():
+    p = AccessPath.parse("request.args")
+    assert p.base == "request"
+    assert p.selectors == (Selector("field", "args"),)
+
+
+def test_access_path_parse_subscript():
+    p = AccessPath.parse('request.args["next"]')
+    assert p.base == "request"
+    assert p.selectors == (
+        Selector("field", "args"),
+        Selector("subscript", "next"),
+    )
+
+
+def test_access_path_parse_call_result():
+    p = AccessPath.parse("si.getvalue()")
+    assert p.base == "si"
+    assert p.selectors == (Selector("call_result", "getvalue"),)
+
+
+def test_access_path_parse_roundtrip():
+    """parse(path.name) should reconstruct the original AccessPath."""
+    original = AccessPath("request", (
+        Selector("field", "args"),
+        Selector("subscript", "next"),
+    ))
+    roundtripped = AccessPath.parse(original.name)
+    assert roundtripped == original
+
+
+def test_access_path_parse_roundtrip_call_result():
+    original = AccessPath("si", (Selector("call_result", "getvalue"),))
+    roundtripped = AccessPath.parse(original.name)
+    assert roundtripped == original
+
+
+def test_access_path_parse_mixed():
+    """Parse a path with field + subscript + call_result."""
+    p = AccessPath.parse('obj.field["key"].method()')
+    assert p.base == "obj"
+    assert p.selectors == (
+        Selector("field", "field"),
+        Selector("subscript", "key"),
+        Selector("call_result", "method"),
+    )
+
+
 from taint_engine.parser_protocol import ASTNode, LanguageGrammar, Parser
 
 

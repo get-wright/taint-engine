@@ -52,6 +52,54 @@ class AccessPath:
             selectors=tuple(Selector("field", p) for p in parts[1:]),
         )
 
+    @classmethod
+    def parse(cls, canonical: str) -> AccessPath:
+        """Parse a canonical AccessPath name back into structured selectors.
+
+        Handles field (`.name`), subscript (`["key"]`), and call_result
+        (`.name()`) syntax produced by the ``name`` property.  Falls back
+        to ``from_dotted`` for plain dotted names.
+        """
+        selectors: list[Selector] = []
+        # Find the base: everything before the first selector token
+        i = 0
+        length = len(canonical)
+
+        # Scan for base (up to first `.`, `[`, or end)
+        while i < length and canonical[i] not in (".", "["):
+            i += 1
+        base = canonical[:i]
+        if not base:
+            return cls(base=canonical)
+
+        while i < length:
+            if canonical[i] == "[":
+                # Subscript: ["key"]
+                end = canonical.find("]", i)
+                if end == -1:
+                    break
+                # Strip [" and "]
+                key = canonical[i + 2 : end - 1]
+                selectors.append(Selector("subscript", key))
+                i = end + 1
+            elif canonical[i] == ".":
+                # Field or call_result — scan the name
+                i += 1
+                name_start = i
+                while i < length and canonical[i] not in (".", "[", "("):
+                    i += 1
+                seg = canonical[name_start:i]
+                if i < length and canonical[i] == "(":
+                    # call_result: .name()
+                    selectors.append(Selector("call_result", seg))
+                    i += 2  # skip "()"
+                else:
+                    selectors.append(Selector("field", seg))
+            else:
+                break
+
+        return cls(base=base, selectors=tuple(selectors))
+
     def with_field(self, field_name: str) -> AccessPath:
         return AccessPath(self.base, self.selectors + (Selector("field", field_name),))
 
