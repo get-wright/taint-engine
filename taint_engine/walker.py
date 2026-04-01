@@ -20,7 +20,7 @@ from .ast_helpers import (
     is_conditional_ancestor,
     walk_tree,
 )
-from .models import AccessPath, GuardInfo, SanitizerInfo, TransformerInfo
+from .models import AccessPath, GuardInfo, SanitizerInfo, Selector, TransformerInfo
 
 logger = logging.getLogger(__name__)
 
@@ -807,6 +807,138 @@ def _handle_mutating_call(call_node, grammar, state: WalkState) -> None:
 # ---------------------------------------------------------------------------
 # AST helpers (local to walker)
 # ---------------------------------------------------------------------------
+
+
+def _extract_first_string_arg(args_node) -> str | None:
+    """Extract the first string literal argument value from an arguments node."""
+    if args_node is None:
+        return None
+    for child in args_node.children:
+        if child.type in ("string", "string_literal"):
+            raw = child.text.decode()
+            for q in ('"""', "'''", '"', "'"):
+                if raw.startswith(q) and raw.endswith(q) and len(raw) >= 2 * len(q):
+                    return raw[len(q) : -len(q)]
+            return raw
+    return None
+
+
+def _resolve_expression_path(
+    node, grammar, rules, ext: str,
+) -> AccessPath | None:
+    """Resolve an expression AST node to a canonical AccessPath.
+
+    Returns None for nodes that are not single-value expressions
+    (operators, literals, etc.).
+    """
+    if node.type == "identifier":
+        return AccessPath.from_identifier(node.text.decode())
+
+    member_types = set(grammar.member_access_types)
+    call_types = set(grammar.call_types)
+
+    # Member access: a.b, a.b.c — recurse on object, append field
+    if node.type in member_types:
+        prop = get_member_property(node)
+        obj_node = node.child_by_field_name("object")
+        if obj_node and prop:
+            base = _resolve_expression_path(obj_node, grammar, rules, ext)
+            if base is not None:
+                return base.with_field(prop)
+        return None
+
+    # Call expression: check for accessor normalization or call_result
+    if node.type in call_types:
+        func_ref = node.child_by_field_name("function")
+        if func_ref is None:
+            return None
+
+        if func_ref.type in member_types:
+            method_name = get_member_property(func_ref)
+            obj_node = func_ref.child_by_field_name("object")
+
+            # Subscript accessor? e.g. request.args.get("next") → request.args["next"]
+            accessor_list = rules.subscript_accessors(ext)
+            if method_name in accessor_list:
+                args_node = (
+                    node.child_by_field_name("arguments")
+                    or node.child_by_field_name("argument_list")
+                )
+                key = _extract_first_string_arg(args_node)
+                if key is not None and obj_node:
+                    receiver = _resolve_expression_path(
+                        obj_node, grammar, rules, ext,
+                    )
+                    if receiver is not None:
+                        return receiver.with_subscript(key)
+
+            # Unrecognized method call → call_result selector
+            if obj_node and method_name:
+                receiver = _resolve_expression_path(
+                    obj_node, grammar, rules, ext,
+                )
+                if receiver is not None:
+                    return receiver.with_call_result(method_name)
+
+        elif func_ref.type == "identifier":
+            callee = func_ref.text.decode()
+            return AccessPath(callee, (Selector("call_result", callee),))
+
+        return None
+
+    # Subscript: a["b"]
+    if node.type == "subscript":
+        value_node = (
+            node.child_by_field_name("value")
+            or node.child_by_field_name("object")
+        )
+        subscript_node = (
+            node.child_by_field_name("subscript")
+            or node.child_by_field_name("index")
+        )
+        if value_node and subscript_node:
+            base = _resolve_expression_path(value_node, grammar, rules, ext)
+            key = _extract_first_string_arg(subscript_node)
+            if key is None and subscript_node.type in ("string", "string_literal"):
+                raw = subscript_node.text.decode()
+                for q in ('"', "'"):
+                    if raw.startswith(q) and raw.endswith(q):
+                        key = raw[1:-1]
+                        break
+            if base is not None and key is not None:
+                return base.with_subscript(key)
+
+    return None
+
+
+def _resolve_deps(
+    rhs_node, grammar, rules, ext: str,
+) -> frozenset[AccessPath]:
+    """Resolve an RHS expression into structured AccessPath dependencies.
+
+    For compound expressions (binary ops, boolean ops), splits into operands.
+    Falls back to wrapping collect_identifiers results.
+    """
+    if rhs_node.type in (
+        "binary_expression",
+        "boolean_operator",
+        "conditional_expression",
+        "ternary_expression",
+    ):
+        deps: set[AccessPath] = set()
+        for child in rhs_node.children:
+            if child.is_named:
+                deps.update(_resolve_deps(child, grammar, rules, ext))
+        if deps:
+            return frozenset(deps)
+
+    path = _resolve_expression_path(rhs_node, grammar, rules, ext)
+    if path is not None:
+        return frozenset({path})
+
+    return frozenset(
+        AccessPath.from_identifier(name) for name in collect_identifiers(rhs_node)
+    )
 
 
 def _get_body(func_node) -> object | None:
