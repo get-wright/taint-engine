@@ -62,7 +62,6 @@ def _augment_cross_file(
     parser,
     rules,
     check_id: str,
-    cwe_list: list[str],
     args,
     label: str | None = None,
     depth: int = 0,
@@ -92,7 +91,6 @@ def _augment_cross_file(
             function_name=resolved.name,
             sink_line=resolved.end_line + 1,
             check_id=check_id,
-            cwe_list=cwe_list,
             rules=rules,
             parser=parser,
             label=label,
@@ -108,7 +106,6 @@ def _augment_cross_file(
                 parser=parser,
                 rules=rules,
                 check_id=check_id,
-                cwe_list=cwe_list,
                 args=args,
                 label=label,
                 depth=depth + 1,
@@ -199,7 +196,6 @@ def run_trace(args) -> int:
     }
     lang_prefix = _LANG_CHECK_PREFIX.get(ext, ext.lstrip("."))
     check_id = args.check_id or f"{lang_prefix}.taint"
-    cwe_list = args.cwe.split(",") if args.cwe else []
 
     from .. import trace_taint_flow
 
@@ -212,7 +208,6 @@ def run_trace(args) -> int:
             function_name=func_name,
             sink_line=line,
             check_id=check_id,
-            cwe_list=cwe_list,
             rules=rules,
             parser=parser,
             label=label,
@@ -234,7 +229,6 @@ def run_trace(args) -> int:
                     parser=parser,
                     rules=rules,
                     check_id=check_id,
-                    cwe_list=cwe_list,
                     args=args,
                     label=label,
                 )

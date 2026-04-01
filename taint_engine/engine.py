@@ -49,7 +49,6 @@ def trace_taint_flow(
     function_name: str,
     sink_line: int,
     check_id: str,
-    cwe_list: list[str],
     rules: TaintRuleSet,
     parser: object,
     label: str | None = None,
@@ -96,7 +95,7 @@ def trace_taint_flow(
 
     if not sink_vars:
         # Couldn't identify sink variables — return minimal flow
-        inferred = infer_sink_source(check_id, cwe_list, "")
+        inferred = infer_sink_source(check_id,"")
         flow = TaintFlow(
             path=[FlowStep(variable="?", line=sink_line, expression="", kind="sink")],
             sanitizers=state.sanitizers,
@@ -141,7 +140,7 @@ def trace_taint_flow(
                 guards=state.guards,
                 unresolved_calls=state.unresolved,
                 confidence_factors=[],
-                inferred=infer_sink_source(check_id, cwe_list, sink_expr),
+                inferred=infer_sink_source(check_id,sink_expr),
                 transformers=state.transformers,
             )
             # Prefer flows that actually found a source/parameter

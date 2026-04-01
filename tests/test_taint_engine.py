@@ -21,7 +21,6 @@ def test_straight_line_python():
         function_name="straight_line",
         sink_line=8,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -37,7 +36,6 @@ def test_straight_line_js():
         function_name="straightLine",
         sink_line=4,
         check_id="javascript.xss",
-        cwe_list=["CWE-79"],
         rules=RULES,
         parser=PARSER,
     )
@@ -54,7 +52,6 @@ def test_kill_semantics_python():
         function_name="kill_semantics",
         sink_line=14,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -67,7 +64,6 @@ def test_kill_semantics_js():
         function_name="killSemantics",
         sink_line=10,
         check_id="javascript.xss",
-        cwe_list=["CWE-79"],
         rules=RULES,
         parser=PARSER,
     )
@@ -83,7 +79,6 @@ def test_branch_merge_python():
         function_name="branch_merge",
         sink_line=22,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -97,7 +92,6 @@ def test_branch_no_else_python():
         function_name="branch_no_else",
         sink_line=29,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -114,7 +108,6 @@ def test_unknown_call_propagation_python():
         function_name="unknown_call_propagation",
         sink_line=42,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -132,7 +125,6 @@ def test_guard_detected():
         function_name="guarded_sink",
         sink_line=8,
         check_id="python.ssrf",
-        cwe_list=["CWE-918"],
         rules=RULES,
         parser=PARSER,
     )
@@ -148,7 +140,6 @@ def test_no_guard_when_unguarded():
         function_name="unguarded_sink",
         sink_line=20,
         check_id="python.ssrf",
-        cwe_list=["CWE-918"],
         rules=RULES,
         parser=PARSER,
     )
@@ -165,7 +156,6 @@ def test_fstring_propagation():
         function_name="fstring_propagation",
         sink_line=7,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -179,7 +169,6 @@ def test_concat_propagation():
         function_name="concat_propagation",
         sink_line=13,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -193,7 +182,6 @@ def test_template_literal_js():
         function_name="templateLiteralPropagation",
         sink_line=4,
         check_id="javascript.xss",
-        cwe_list=["CWE-79"],
         rules=RULES,
         parser=PARSER,
     )
@@ -244,7 +232,6 @@ def test_field_taint_python():
         function_name="field_taint",
         sink_line=8,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -258,7 +245,6 @@ def test_field_safe_python():
         function_name="field_safe",
         sink_line=15,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -274,7 +260,6 @@ def test_format_propagation():
         function_name="format_propagation",
         sink_line=19,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -291,7 +276,6 @@ def test_guard_with_return():
         function_name="guard_with_return",
         sink_line=15,
         check_id="python.ssrf",
-        cwe_list=["CWE-918"],
         rules=RULES,
         parser=PARSER,
     )
@@ -308,7 +292,6 @@ def test_loop_taint_python():
         function_name="loop_taint",
         sink_line=36,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -326,7 +309,6 @@ def test_tuple_unpacking_python():
         function_name="tuple_unpacking",
         sink_line=59,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -345,7 +327,6 @@ def test_for_loop_variable_python():
         function_name="for_loop_variable",
         sink_line=65,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -364,7 +345,6 @@ def test_destructuring_object_js():
         function_name="destructuringObject",
         sink_line=47,
         check_id="javascript.xss",
-        cwe_list=["CWE-79"],
         rules=RULES,
         parser=PARSER,
     )
@@ -382,7 +362,6 @@ def test_destructuring_array_js():
         function_name="destructuringArray",
         sink_line=52,
         check_id="javascript.xss",
-        cwe_list=["CWE-79"],
         rules=RULES,
         parser=PARSER,
     )
@@ -400,7 +379,6 @@ def test_for_of_loop_js():
         function_name="forOfLoop",
         sink_line=58,
         check_id="javascript.xss",
-        cwe_list=["CWE-79"],
         rules=RULES,
         parser=PARSER,
     )
@@ -419,7 +397,6 @@ def test_existing_fixture_direct_sqli():
         function_name="vulnerable_sqli",
         sink_line=8,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -434,7 +411,6 @@ def test_existing_fixture_sanitized():
         function_name="sanitized_xss",
         sink_line=12,
         check_id="python.xss",
-        cwe_list=["CWE-79"],
         rules=RULES,
         parser=PARSER,
     )
@@ -449,7 +425,6 @@ def test_existing_fixture_multiline():
         function_name="multiline_call",
         sink_line=39,
         check_id="python.ssrf",
-        cwe_list=["CWE-918"],
         rules=RULES,
         parser=PARSER,
     )
@@ -463,7 +438,6 @@ def test_existing_fixture_js_innerhtml():
         function_name="innerHtmlSink",
         sink_line=24,
         check_id="javascript.xss",
-        cwe_list=["CWE-79"],
         rules=RULES,
         parser=PARSER,
     )
@@ -481,7 +455,6 @@ def test_source_false_positive_string():
         function_name="source_false_positive_string",
         sink_line=7,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -496,7 +469,6 @@ def test_source_false_positive_validate_input():
         function_name="source_false_positive_validate",
         sink_line=12,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -514,7 +486,6 @@ def test_keyword_arg_not_in_sink_vars():
         function_name="keyword_arg_filtering",
         sink_line=17,
         check_id="python.ssrf",
-        cwe_list=["CWE-918"],
         rules=RULES,
         parser=PARSER,
     )
@@ -532,7 +503,6 @@ def test_wrong_sanitizer_for_context():
         function_name="wrong_sanitizer_for_context",
         sink_line=10,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -553,7 +523,6 @@ def test_sanitization_invalidated_by_transformer():
         function_name="sanitization_invalidated",
         sink_line=16,
         check_id="python.xss",
-        cwe_list=["CWE-79"],
         rules=RULES,
         parser=PARSER,
     )
@@ -576,7 +545,6 @@ def test_correct_sanitization_effective():
         function_name="correct_sanitization",
         sink_line=21,
         check_id="python.xss",
-        cwe_list=["CWE-79"],
         rules=RULES,
         parser=PARSER,
     )
@@ -597,7 +565,6 @@ def test_no_label_all_sanitizers_count():
         function_name="unknown_sink_all_sanitizers",
         sink_line=26,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -618,7 +585,6 @@ def test_label_detection_sql():
         function_name="label_detection_sql",
         sink_line=30,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -633,7 +599,6 @@ def test_label_detection_ssrf():
         function_name="label_detection_ssrf",
         sink_line=34,
         check_id="python.ssrf",
-        cwe_list=["CWE-918"],
         rules=RULES,
         parser=PARSER,
     )
@@ -651,7 +616,6 @@ def test_try_except_flow():
         function_name="try_except_flow",
         sink_line=41,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -668,7 +632,6 @@ def test_with_statement_flow():
         function_name="with_statement_flow",
         sink_line=47,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -685,7 +648,6 @@ def test_augmented_assignment_flow():
         function_name="augmented_assignment_flow",
         sink_line=53,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -707,7 +669,6 @@ def test_accessor_source_recovery():
         function_name="accessor_source",
         sink_line=6,
         check_id="python.redirect",
-        cwe_list=["CWE-601"],
         rules=RULES,
         parser=PARSER,
     )
@@ -722,7 +683,6 @@ def test_member_read_source_recovery():
         function_name="member_read_source",
         sink_line=11,
         check_id="python.redirect",
-        cwe_list=["CWE-601"],
         rules=RULES,
         parser=PARSER,
     )
@@ -736,7 +696,6 @@ def test_alias_chain_recovery():
         function_name="alias_chain",
         sink_line=25,
         check_id="python.sqli",
-        cwe_list=["CWE-89"],
         rules=RULES,
         parser=PARSER,
     )
@@ -751,7 +710,6 @@ def test_destructured_redirect_js():
         function_name="destructuredRedirect",
         sink_line=6,
         check_id="javascript.redirect",
-        cwe_list=["CWE-601"],
         rules=RULES,
         parser=PARSER,
     )
@@ -765,7 +723,6 @@ def test_destructured_file_serve_js():
         function_name="destructuredFileServe",
         sink_line=12,
         check_id="javascript.path",
-        cwe_list=["CWE-22"],
         rules=RULES,
         parser=PARSER,
     )
@@ -779,7 +736,6 @@ def test_direct_member_sink_js():
         function_name="directMemberSink",
         sink_line=16,
         check_id="javascript.redirect",
-        cwe_list=["CWE-601"],
         rules=RULES,
         parser=PARSER,
     )

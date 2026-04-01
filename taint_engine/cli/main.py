@@ -40,7 +40,6 @@ def _build_parser() -> argparse.ArgumentParser:
     trc.add_argument("--symbol", default=None, help="Target specific symbol")
     trc.add_argument("--format", choices=["text", "json", "sarif"], default="text")
     trc.add_argument("--check-id", default=None, help="Check ID for rule matching")
-    trc.add_argument("--cwe", default=None, help="Comma-separated CWE list")
     trc.add_argument(
         "--rules-dir",
         default=None,

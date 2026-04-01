@@ -24,7 +24,6 @@ GROUND_TRUTH = [
         "function": "login",
         "sink_line": 34,
         "check_id": "typescript.sqli",
-        "cwe_list": ["CWE-89"],
         "expected_source_contains": ["req.body"],
     },
     {
@@ -33,7 +32,6 @@ GROUND_TRUTH = [
         "function": "redirect",
         "sink_line": 19,
         "check_id": "typescript.redirect",
-        "cwe_list": ["CWE-601"],
         "expected_source_contains": ["query"],
     },
     {
@@ -42,7 +40,6 @@ GROUND_TRUTH = [
         "function": "fileServer",
         "sink_line": 33,
         "check_id": "typescript.path",
-        "cwe_list": ["CWE-22"],
         "expected_source_contains": ["params"],
     },
     {
@@ -51,7 +48,6 @@ GROUND_TRUTH = [
         "function": "anonymous",
         "sink_line": 72,
         "check_id": "javascript.redirect",
-        "cwe_list": ["CWE-601"],
         "expected_source_contains": ["req.query"],
     },
     {
@@ -60,7 +56,6 @@ GROUND_TRUTH = [
         "function": "mitre",
         "sink_line": 218,
         "check_id": "python.eval",
-        "cwe_list": ["CWE-95"],
         "expected_source_contains": ["request.POST"],
     },
     {
@@ -69,7 +64,6 @@ GROUND_TRUTH = [
         "function": "cmd_lab",
         "sink_line": 460,
         "check_id": "python.eval",
-        "cwe_list": ["CWE-95"],
         "expected_source_contains": ["request.POST"],
     },
     {
@@ -78,7 +72,6 @@ GROUND_TRUTH = [
         "function": "sql_lab",
         "sink_line": 878,
         "check_id": "python.sqli",
-        "cwe_list": ["CWE-89"],
         "expected_source_contains": ["request.POST"],
     },
     {
@@ -87,7 +80,6 @@ GROUND_TRUTH = [
         "function": "login",
         "sink_line": 43,
         "check_id": "python.redirect",
-        "cwe_list": ["CWE-601"],
         "expected_source_contains": ["request.args"],
     },
     {
@@ -96,7 +88,6 @@ GROUND_TRUTH = [
         "function": "alias_transfer",
         "sink_line": 55,
         "check_id": "python.redirect",
-        "cwe_list": ["CWE-601"],
         "expected_source_contains": ["request"],
     },
     {
@@ -105,7 +96,6 @@ GROUND_TRUTH = [
         "function": "export_aliases",
         "sink_line": 412,
         "check_id": "python.ssrf",
-        "cwe_list": ["CWE-918"],
         "expected_source_contains": ["si"],
     },
     {
@@ -114,7 +104,6 @@ GROUND_TRUTH = [
         "function": "create",
         "sink_line": 161,
         "check_id": "python.auth",
-        "cwe_list": ["CWE-916"],
         "expected_source_contains": ["validated_data"],
     },
 ]
@@ -137,7 +126,6 @@ def test_ground_truth(case):
         function_name=case["function"],
         sink_line=case["sink_line"],
         check_id=case["check_id"],
-        cwe_list=case["cwe_list"],
         rules=RULES,
         parser=PARSER,
     )

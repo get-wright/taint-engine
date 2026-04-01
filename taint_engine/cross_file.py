@@ -93,7 +93,6 @@ async def resolve_cross_file(
                 function_name=callee_name,
                 sink_line=effective_sink,
                 check_id="",
-                cwe_list=[],
                 rules=rules,
                 parser=parser,
             )

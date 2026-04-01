@@ -1,35 +1,10 @@
-"""Infer sink type and expected sources from Semgrep finding metadata."""
+"""Infer sink type and expected sources from check ID and code patterns."""
 
 from __future__ import annotations
 
 import re
 
 from .models import InferredSinkSource
-
-_CWE_ID_RE = re.compile(r"(CWE-\d+)")
-
-CWE_SINK_MAP: dict[str, str] = {
-    "CWE-89": "sql_query",
-    "CWE-564": "sql_query",
-    "CWE-79": "html_output",
-    "CWE-87": "html_output",
-    "CWE-78": "command_exec",
-    "CWE-77": "command_exec",
-    "CWE-88": "command_exec",
-    "CWE-22": "file_path",
-    "CWE-23": "file_path",
-    "CWE-36": "file_path",
-    "CWE-73": "file_path",
-    "CWE-94": "code_exec",
-    "CWE-95": "code_exec",
-    "CWE-96": "code_exec",
-    "CWE-918": "ssrf",
-    "CWE-601": "redirect",
-    "CWE-611": "xxe",
-    "CWE-502": "deserialization",
-    "CWE-327": "crypto",
-    "CWE-338": "crypto",
-}
 
 _EXPECTED_SOURCES: dict[str, list[str]] = {
     "sql_query": ["user_input", "external_data", "request_parameter"],
@@ -77,31 +52,11 @@ _CODE_PATTERNS: list[tuple[re.Pattern, str]] = [
 ]
 
 
-def parse_cwe_ids(cwe_list: list[str]) -> list[str]:
-    ids = []
-    for entry in cwe_list:
-        m = _CWE_ID_RE.search(entry)
-        if m:
-            ids.append(m.group(1))
-    return ids
-
-
 def infer_sink_source(
-    check_id: str, cwe_list: list[str], flagged_line: str
+    check_id: str, flagged_line: str,
 ) -> InferredSinkSource:
-    # 1. CWE mapping
-    cwe_ids = parse_cwe_ids(cwe_list)
-    for cwe_id in cwe_ids:
-        if cwe_id in CWE_SINK_MAP:
-            sink_type = CWE_SINK_MAP[cwe_id]
-            return InferredSinkSource(
-                sink_expression=flagged_line,
-                sink_type=sink_type,
-                expected_sources=_EXPECTED_SOURCES.get(sink_type, ["user_input"]),
-                inferred_from="cwe",
-            )
-
-    # 2. Rule ID keywords
+    """Infer sink type and expected sources from check ID and code patterns."""
+    # 1. Rule ID keywords
     rule_lower = check_id.lower()
     for keyword, sink_type in _RULE_ID_KEYWORDS.items():
         if keyword in rule_lower:
@@ -112,7 +67,7 @@ def infer_sink_source(
                 inferred_from="rule_id",
             )
 
-    # 3. Code pattern heuristic
+    # 2. Code pattern heuristic
     for pattern, sink_type in _CODE_PATTERNS:
         if pattern.search(flagged_line):
             return InferredSinkSource(
@@ -122,7 +77,7 @@ def infer_sink_source(
                 inferred_from="code_pattern",
             )
 
-    # 4. Generic fallback
+    # 3. Generic fallback
     return InferredSinkSource(
         sink_expression=flagged_line,
         sink_type="generic",
