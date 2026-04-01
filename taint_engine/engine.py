@@ -674,6 +674,7 @@ def _trace_back(
     grammar,
     visited: set[tuple[str, int]],
     max_depth: int = 50,
+    accumulated_selectors: tuple[Selector, ...] = (),
 ) -> Optional[list[FlowStep]]:
     """Trace backwards from a variable through reaching definitions to find a source.
 
@@ -683,12 +684,36 @@ def _trace_back(
     if max_depth <= 0:
         return None
 
+    var_path = AccessPath.from_dotted(var)
+
     # Base case: var is a parameter
-    if var in params:
-        # Check if the parameter's reaching def still points to the parameter
-        defs = active.reaching(var)
+    base_name = var_path.base
+    if base_name in params:
+        defs, remaining = active.reaching_path(var_path)
         for d in defs:
             if d.expression.startswith("parameter:"):
+                effective = remaining + accumulated_selectors
+                # Check if parameter + selectors matches a source rule
+                lang_rules = rules.for_extension(ext)
+                if lang_rules:
+                    for source in lang_rules.sources:
+                        if _match_source_by_path(
+                            source, base_name, effective,
+                        ):
+                            effective_name = (
+                                AccessPath(base_name, effective).name
+                                if effective
+                                else var
+                            )
+                            return [
+                                FlowStep(
+                                    variable=effective_name,
+                                    line=d.line,
+                                    expression=d.expression,
+                                    kind="source",
+                                )
+                            ]
+                # No source rule match — return as parameter
                 return [
                     FlowStep(
                         variable=var,
@@ -697,29 +722,23 @@ def _trace_back(
                         kind="parameter",
                     )
                 ]
-        # Even if there's no explicit parameter def, if the var name is in params
-        # and it has no reaching defs, treat it as a parameter source
-        if not defs:
+        if not active.reaching(base_name):
             return [
                 FlowStep(
                     variable=var,
                     line=0,
-                    expression=f"parameter:{var}",
+                    expression=f"parameter:{base_name}",
                     kind="parameter",
                 )
             ]
 
-    defs = active.reaching(var)
-
-    # Handle dotted names: if "obj.field" has no defs, try base "obj"
-    if not defs and "." in var:
-        base = var.split(".")[0]
-        defs = active.reaching(base)
+    defs, remaining = active.reaching_path(var_path)
 
     if not defs:
         return None
 
-    # Try each reaching definition
+    effective_for_source = remaining + accumulated_selectors
+
     for defn in sorted(defs, key=lambda d: d.line, reverse=True):
         key = (var, defn.line)
         if key in visited:
@@ -740,11 +759,23 @@ def _trace_back(
                             kind="source",
                         )
                     ]
+                # Try path-based matching with accumulated selectors
+                if effective_for_source and _match_source_by_path(
+                    source, var_path.base, effective_for_source,
+                ):
+                    return [
+                        FlowStep(
+                            variable=var,
+                            line=defn.line,
+                            expression=expr,
+                            kind="source",
+                        )
+                    ]
 
         # Recurse into dependencies
         for dep in defn.deps:
             sub_path = _trace_back(
-                dep.name,  # AccessPath.name → str for now
+                dep.name,
                 active,
                 params,
                 rules,
@@ -752,6 +783,7 @@ def _trace_back(
                 grammar,
                 visited,
                 max_depth=max_depth - 1,
+                accumulated_selectors=remaining + accumulated_selectors,
             )
             if sub_path:
                 step = FlowStep(

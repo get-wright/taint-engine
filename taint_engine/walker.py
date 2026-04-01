@@ -184,10 +184,7 @@ def _handle_assignment(node, grammar, state: WalkState) -> None:
     for lhs_name, rhs_node in pairs:
         if not lhs_name or rhs_node is None:
             continue
-        rhs_ids = frozenset(
-            AccessPath.from_identifier(name)
-            for name in collect_identifiers(rhs_node)
-        )
+        rhs_ids = _resolve_deps(rhs_node, grammar, state.rules, state.ext)
 
         if is_augmented:
             old_deps: set[AccessPath] = set()
@@ -926,9 +923,8 @@ def _resolve_expression_path(
                 if receiver is not None:
                     return receiver.with_call_result(method_name)
 
-        elif func_ref.type == "identifier":
-            callee = func_ref.text.decode()
-            return AccessPath(callee, (Selector("call_result", callee),))
+        # Bare function calls like helper(x) — fall through to
+        # collect_identifiers so arguments are captured as deps.
 
         return None
 
@@ -980,6 +976,18 @@ def _resolve_deps(
 
     path = _resolve_expression_path(rhs_node, grammar, rules, ext)
     if path is not None:
+        # For method calls that produced a call_result path, also include
+        # argument identifiers — data may flow through either the receiver
+        # (e.g. si.getvalue()) or the arguments (e.g. base64.b64decode(safe)).
+        call_types = set(grammar.call_types)
+        if rhs_node.type in call_types and any(
+            s.kind == "call_result" for s in path.selectors
+        ):
+            arg_ids = frozenset(
+                AccessPath.from_identifier(name)
+                for name in collect_identifiers(rhs_node)
+            )
+            return frozenset({path}) | arg_ids
         return frozenset({path})
 
     return frozenset(

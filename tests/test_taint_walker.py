@@ -7,7 +7,7 @@ import tree_sitter_python as ts_python
 from tree_sitter import Language, Parser as TSParser
 
 from taint_engine.walker import walk_body, WalkState, Definition
-from taint_engine.models import AccessPath
+from taint_engine.models import AccessPath, Selector
 from taint_engine.rules import load_rules
 from tests.parser_helpers import JS_GRAMMAR, PYTHON_GRAMMAR
 
@@ -660,3 +660,99 @@ def test_branch_termination_return():
     assert "default" in defn.expression, (
         f"y should be 'default' (not from terminated branch), got {defn.expression}"
     )
+
+
+# ---------------------------------------------------------------------------
+# AccessPath selector tests
+# ---------------------------------------------------------------------------
+
+
+def test_walk_accessor_normalization():
+    """request.args.get("next") dep should have subscript selector."""
+    code = 'def f(request):\n    y = request.args.get("next")\n'
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".py", grammar=grammar)
+    state.active.define("request", _param_def("request"))
+    walk_body(func, grammar, state)
+
+    y_defs = state.active.reaching("y")
+    assert len(y_defs) == 1
+    defn = next(iter(y_defs))
+    assert len(defn.deps) == 1
+    dep = next(iter(defn.deps))
+    assert dep.base == "request"
+    assert any(s.kind == "field" and s.name == "args" for s in dep.selectors)
+    assert any(s.kind == "subscript" and s.name == "next" for s in dep.selectors)
+
+
+def test_walk_dotted_member_read():
+    """request.url dep should have field selector."""
+    code = "def f(request):\n    u = request.url\n"
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".py", grammar=grammar)
+    state.active.define("request", _param_def("request"))
+    walk_body(func, grammar, state)
+
+    u_defs = state.active.reaching("u")
+    assert len(u_defs) == 1
+    dep = next(iter(next(iter(u_defs)).deps))
+    assert dep.base == "request"
+    assert dep.selectors == (Selector("field", "url"),)
+
+
+def test_walk_call_result_dep():
+    """si.getvalue() dep should have call_result selector."""
+    code = "def f(si):\n    v = si.getvalue()\n"
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".py", grammar=grammar)
+    state.active.define("si", _param_def("si"))
+    walk_body(func, grammar, state)
+
+    v_defs = state.active.reaching("v")
+    assert len(v_defs) == 1
+    deps = next(iter(v_defs)).deps
+    call_deps = [d for d in deps if d.selectors]
+    assert len(call_deps) == 1
+    dep = call_deps[0]
+    assert dep.base == "si"
+    assert dep.selectors == (Selector("call_result", "getvalue"),)
+
+
+def test_walk_chained_member():
+    """req.body.email dep should have two field selectors."""
+    code = "function f(req) {\n    var e = req.body.email;\n}\n"
+    func = _parse_js(code)
+    grammar = JS_GRAMMAR
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".js", grammar=grammar)
+    state.active.define("req", _param_def("req"))
+    walk_body(func, grammar, state)
+
+    e_defs = state.active.reaching("e")
+    assert len(e_defs) == 1
+    dep = next(iter(next(iter(e_defs)).deps))
+    assert dep.base == "req"
+    assert dep.selectors == (Selector("field", "body"), Selector("field", "email"))
+
+
+def test_walk_subscript_accessor_pop():
+    """data.pop("key") dep should have subscript selector for "key"."""
+    code = 'def f(data):\n    p = data.pop("key")\n'
+    func = _parse_python(code)
+    grammar = _make_grammar()
+    rules = load_rules(RULES_DIR)
+    state = WalkState(rules=rules, ext=".py", grammar=grammar)
+    state.active.define("data", _param_def("data"))
+    walk_body(func, grammar, state)
+
+    p_defs = state.active.reaching("p")
+    assert len(p_defs) == 1
+    dep = next(iter(next(iter(p_defs)).deps))
+    assert dep.base == "data"
+    assert any(s.kind == "subscript" and s.name == "key" for s in dep.selectors)
