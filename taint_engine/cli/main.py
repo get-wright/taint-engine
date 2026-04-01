@@ -42,6 +42,11 @@ def _build_parser() -> argparse.ArgumentParser:
     trc.add_argument("--check-id", default=None, help="Check ID for rule matching")
     trc.add_argument("--cwe", default=None, help="Comma-separated CWE list")
     trc.add_argument(
+        "--rules-dir",
+        default=None,
+        help="Override packaged rules with a custom rules directory or JSON file",
+    )
+    trc.add_argument(
         "--cross-file",
         action="store_true",
         default=False,

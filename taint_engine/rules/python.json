@@ -5,7 +5,11 @@
     "request.args":      ["html", "sql", "shell", "ssrf", "redirect"],
     "request.form":      ["html", "sql", "shell", "ssrf"],
     "request.get_json":  ["html", "sql", "shell", "ssrf"],
+    "request.headers":   ["html", "sql", "ssrf", "redirect"],
+    "request.cookies":   ["html", "sql", "ssrf", "redirect"],
     "request.data":      ["html", "sql", "shell", "ssrf"],
+    "request.FILES":     ["html", "path"],
+    "request.META":      ["html", "sql", "shell", "ssrf", "redirect", "path"],
     "os.environ":        ["path", "shell"],
     "sys.argv":          ["path", "shell", "eval"],
     "input()":           ["html", "sql", "shell", "ssrf", "path", "eval"],
@@ -14,12 +18,12 @@
   },
   "sinks": {
     "html": {
-      "call":     ["document.write", "response.write"],
+      "call":     ["document.write", "response.write", "HttpResponse", "HttpResponseBadRequest", "TemplateResponse"],
       "property": ["innerHTML", "outerHTML"],
       "accepts":  ["html-encoded", "int", "float", "stripped"]
     },
     "sql": {
-      "call":     ["cursor.execute", "db.execute", "conn.execute"],
+      "call":     ["cursor.execute", "db.execute", "conn.execute", "cursor.executemany", "db.executemany", "RawSQL", "raw"],
       "accepts":  ["parameterized", "int", "float"]
     },
     "shell": {
@@ -54,6 +58,8 @@
     { "name": "os.path.normpath",   "removes": ["path"], "sets_state": "normalized-path" },
     { "name": "parameterize",       "removes": ["sql"], "sets_state": "parameterized" },
     { "name": "sanitize_sql",       "removes": ["sql"], "sets_state": "parameterized" },
+    { "name": "urllib.parse.urlparse", "removes": ["ssrf", "redirect"], "sets_state": "validated-url" },
+    { "name": "urlparse",           "removes": ["ssrf", "redirect"], "sets_state": "validated-url" },
     { "name": "int",                "removes": ["sql", "html", "ssrf", "shell"], "sets_state": "int" },
     { "name": "float",              "removes": ["sql", "html", "ssrf"], "sets_state": "float" }
   ],

@@ -11,3 +11,21 @@ build/
 
 # Superpowers brainstorm artifacts
 .superpowers/
+
+# Agent plans, specs, and docs
+AGENTS.md
+CLAUDE.md
+docs/superpowers/
+docs/plans/
+
+# Worktrees
+.worktrees/
+
+# Eval repos and temp files
+tmp/
+
+# Build specs
+*.spec
+
+# Lock files
+uv.lock

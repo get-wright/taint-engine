@@ -267,18 +267,11 @@ def _find_vars_at_line(
     results: list[tuple[str, str, str | None]] = []
     seen: set[str] = set()
 
-    # Pass 1: Call arguments — range match for multi-line calls.
-    # Match ANY call at the sink line; Semgrep already identified this line
-    # as a finding, so the call here is the sink regardless of rule config.
-    for node in walk_tree(func_node):
-        if node.type not in call_types:
-            continue
-        start_row = node.start_point[0] + 1
-        end_row = node.end_point[0] + 1
-        if not (start_row <= sink_line <= end_row):
-            continue
-
-        # Collect variables from arguments
+    # Pass 1: Call arguments. Prefer sink-like calls that start on the target
+    # line, then fall back to the tightest call spanning the line.
+    for node in _select_sink_calls(
+        func_node, sink_line, call_types, rules, ext,
+    ):
         args_node = node.child_by_field_name("arguments") or node.child_by_field_name(
             "argument_list"
         )
@@ -293,7 +286,11 @@ def _find_vars_at_line(
 
         callee = get_full_callee(node)
         expr_text = node.text.decode()
-        for arg_child in walk_tree(args_node):
+        for arg_child in _iter_value_nodes(
+            args_node,
+            grammar,
+            call_types,
+        ):
             if arg_child.type == "identifier":
                 if (
                     arg_child.parent
@@ -390,6 +387,94 @@ def _find_vars_at_line(
                                     )
 
     return results
+
+
+def _select_sink_calls(
+    func_node,
+    sink_line: int,
+    call_types: set[str],
+    rules: TaintRuleSet,
+    ext: str,
+) -> list[object]:
+    """Select the call node(s) most likely to represent the sink at a line."""
+    candidates: list[object] = []
+    for node in walk_tree(func_node):
+        if node.type not in call_types:
+            continue
+        start_row = node.start_point[0] + 1
+        end_row = node.end_point[0] + 1
+        if start_row <= sink_line <= end_row:
+            candidates.append(node)
+
+    if not candidates:
+        return []
+
+    starting = [node for node in candidates if node.start_point[0] + 1 == sink_line]
+    scoped = starting or candidates
+
+    sink_calls = []
+    for node in scoped:
+        callee = get_full_callee(node)
+        if callee and _matches_call_sink(callee, rules, ext):
+            sink_calls.append(node)
+    if sink_calls:
+        return sink_calls
+
+    min_span = min(node.end_byte - node.start_byte for node in scoped)
+    return [node for node in scoped if node.end_byte - node.start_byte == min_span]
+
+
+def _matches_call_sink(callee: str, rules: TaintRuleSet, ext: str) -> bool:
+    """Return True when a callee matches a configured sink by exact or suffix."""
+    if rules.is_call_sink(ext, callee):
+        return True
+
+    lang_rules = rules.for_extension(ext)
+    if lang_rules is None:
+        return False
+
+    for sink_name in lang_rules.call_sinks:
+        if callee.endswith(sink_name):
+            return True
+    return False
+
+
+def _iter_value_nodes(
+    node,
+    grammar,
+    call_types: set[str],
+):
+    """Yield identifier/member nodes that contribute value flow for a sink."""
+    func_types = set(grammar.func_types)
+
+    def walk_value_subtree(cur):
+        if cur.type in func_types:
+            return
+
+        if cur.type in call_types:
+            args_node = cur.child_by_field_name("arguments") or cur.child_by_field_name(
+                "argument_list"
+            )
+            if args_node is None:
+                for child in cur.children:
+                    if child.type == "argument_list":
+                        args_node = child
+                        break
+            if args_node is not None:
+                for child in args_node.children:
+                    if child.type in {"(", ")", ","}:
+                        continue
+                    yield from walk_value_subtree(child)
+            return
+
+        yield cur
+        for child in cur.children:
+            yield from walk_value_subtree(child)
+
+    for child in node.children:
+        if child.type in {"(", ")", ","}:
+            continue
+        yield from walk_value_subtree(child)
 
 
 def _reconstruct_dotted(member_node) -> str:

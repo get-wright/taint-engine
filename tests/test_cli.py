@@ -92,6 +92,42 @@ class TestTraceCommand:
         data = json.loads(result.stdout)
         assert "file" in data
 
+    def test_trace_rules_dir_override(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_path = os.path.join(tmpdir, "custom_trace.py")
+            with open(source_path, "w", encoding="utf-8") as f:
+                f.write(
+                    "def demo():\n"
+                    "    x = input()\n"
+                    "    print(x)\n"
+                )
+
+            rules_dir = os.path.join(tmpdir, "rules")
+            os.mkdir(rules_dir)
+
+            with open(
+                os.path.join(os.path.dirname(__file__), "..", "taint_engine", "rules", "python.json"),
+                encoding="utf-8",
+            ) as f:
+                py_rules = json.load(f)
+
+            py_rules["sinks"]["html"]["call"].append("print")
+
+            with open(os.path.join(rules_dir, "python.json"), "w", encoding="utf-8") as f:
+                json.dump(py_rules, f)
+
+            result = run_cli(
+                "trace",
+                f"{source_path}:3",
+                "--format",
+                "json",
+                "--rules-dir",
+                rules_dir,
+            )
+            assert result.returncode == 0
+            data = json.loads(result.stdout)
+            assert data["flows"][0]["active_label"] == "html"
+
     def test_trace_invalid_format(self):
         result = run_cli("trace", f"{SAMPLE_PY}:8", "--format", "xml")
         assert result.returncode != 0

@@ -1,7 +1,7 @@
 """Tests for taint_engine.engine — reaching-definitions-based taint tracing."""
 
 import os
-from taint_engine.engine import trace_taint_flow
+from taint_engine.engine import _find_function_node, _find_vars_at_line, trace_taint_flow
 from taint_engine.rules import load_rules
 from tests.parser_helpers import TreeSitterParser
 
@@ -207,6 +207,40 @@ def test_template_literal_js():
     )
     assert flow is not None
     assert flow.source.variable == "userInput"
+
+
+def test_sink_var_selection_ignores_promise_callback_identifiers():
+    file_path = os.path.join(FIXTURES, "taint_sink_selection.js")
+    root = PARSER.parse_file(file_path)
+    grammar = PARSER.get_grammar(".js")
+    assert grammar is not None
+
+    func_node = _find_function_node(root, "chainedPromiseSql", grammar)
+    assert func_node is not None
+
+    sink_vars = _find_vars_at_line(func_node, 2, grammar, RULES, ".js")
+    sink_names = {name for name, _, _ in sink_vars}
+    sink_ids = {sink_id for _, _, sink_id in sink_vars}
+
+    assert "error" not in sink_names
+    assert "authenticatedUser" not in sink_names
+    assert sink_ids == {"models.sequelize.query"}
+
+
+def test_sink_var_selection_ignores_nested_call_callees():
+    file_path = os.path.join(FIXTURES, "taint_sink_selection.js")
+    root = PARSER.parse_file(file_path)
+    grammar = PARSER.get_grammar(".js")
+    assert grammar is not None
+
+    func_node = _find_function_node(root, "nestedResolvedFile", grammar)
+    assert func_node is not None
+
+    sink_vars = _find_vars_at_line(func_node, 12, grammar, RULES, ".js")
+    sink_names = {name for name, _, _ in sink_vars}
+
+    assert "path.resolve" not in sink_names
+    assert "file" in sink_names
 
 
 # --- Access path tracking ---

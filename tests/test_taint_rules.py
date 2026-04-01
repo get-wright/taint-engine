@@ -90,6 +90,22 @@ def test_labeled_sources_flatten_to_sources():
     assert "input()" in rules.sources
 
 
+def test_python_additional_request_sources_present():
+    ruleset = load_rules(RULES_DIR)
+    rules = ruleset.for_extension(".py")
+    assert rules is not None
+    assert "request.FILES" in rules.sources
+    assert "request.META" in rules.sources
+
+
+def test_javascript_additional_request_sources_present():
+    ruleset = load_rules(RULES_DIR)
+    rules = ruleset.for_extension(".js")
+    assert rules is not None
+    assert "request.body" in rules.sources
+    assert "request.query" in rules.sources
+
+
 # ---------------------------------------------------------------------------
 # Labeled sinks: flatten into call_sinks/property_sinks + labeled_sinks
 # ---------------------------------------------------------------------------
@@ -102,6 +118,17 @@ def test_language_rules_has_labeled_sinks():
     assert rules.labeled_sinks is not None
     assert "sql" in rules.labeled_sinks
     assert "html" in rules.labeled_sinks
+    assert "shell" in rules.labeled_sinks
+
+
+def test_javascript_has_expanded_sink_labels():
+    ruleset = load_rules(RULES_DIR)
+    rules = ruleset.for_extension(".js")
+    assert rules is not None
+    assert rules.labeled_sinks is not None
+    assert "sql" in rules.labeled_sinks
+    assert "path" in rules.labeled_sinks
+    assert "redirect" in rules.labeled_sinks
     assert "shell" in rules.labeled_sinks
 
 
@@ -128,6 +155,26 @@ def test_labeled_sinks_flatten_to_property_sinks():
     ruleset = load_rules(RULES_DIR)
     assert ruleset.is_property_sink(".py", "innerHTML") is True
     assert ruleset.is_property_sink(".py", "outerHTML") is True
+
+
+def test_python_html_response_sinks_present():
+    ruleset = load_rules(RULES_DIR)
+    assert ruleset.is_call_sink(".py", "HttpResponse") is True
+    assert ruleset.is_call_sink(".py", "HttpResponseBadRequest") is True
+
+
+def test_python_raw_sql_sinks_present():
+    ruleset = load_rules(RULES_DIR)
+    assert ruleset.is_call_sink(".py", "RawSQL") is True
+    assert ruleset.is_call_sink(".py", "raw") is True
+
+
+def test_javascript_expanded_call_sinks_present():
+    ruleset = load_rules(RULES_DIR)
+    assert ruleset.is_call_sink(".js", "sequelize.query") is True
+    assert ruleset.is_call_sink(".js", "res.redirect") is True
+    assert ruleset.is_call_sink(".js", "res.sendFile") is True
+    assert ruleset.is_call_sink(".js", "child_process.exec") is True
 
 
 def test_is_property_sink_js():

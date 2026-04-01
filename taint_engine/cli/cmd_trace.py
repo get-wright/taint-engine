@@ -180,8 +180,15 @@ def run_trace(args) -> int:
 
     from .. import load_rules
 
-    rules_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "rules")
-    rules = load_rules(rules_dir)
+    rules_path = args.rules_dir or os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "rules",
+    )
+    try:
+        rules = load_rules(rules_path)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
 
     _LANG_CHECK_PREFIX = {
         ".py": "python",

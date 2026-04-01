@@ -3,9 +3,13 @@
   "extensions": [".js", ".jsx", ".ts", ".tsx"],
   "sources": {
     "req.body":          ["html", "sql", "shell", "ssrf"],
+    "request.body":      ["html", "sql", "shell", "ssrf"],
     "req.query":         ["html", "sql", "shell", "ssrf", "redirect"],
+    "request.query":     ["html", "sql", "shell", "ssrf", "redirect"],
     "req.params":        ["html", "sql", "shell", "ssrf"],
+    "request.params":    ["html", "sql", "shell", "ssrf"],
     "req.headers":       ["html", "sql", "ssrf"],
+    "request.headers":   ["html", "sql", "ssrf", "redirect"],
     "document.location": ["html", "ssrf", "redirect"],
     "window.location":   ["html", "ssrf", "redirect"],
     "process.env":       ["path", "shell"]
@@ -21,8 +25,24 @@
       "accepts":  []
     },
     "ssrf": {
-      "call":     ["fetch", "XMLHttpRequest"],
+      "call":     ["fetch", "XMLHttpRequest", "axios", "axios.get", "axios.post"],
       "accepts":  ["validated-url", "int"]
+    },
+    "sql": {
+      "call":     ["sequelize.query", "knex.raw", "connection.query", "pool.query", "db.query", "db.execute"],
+      "accepts":  ["parameterized", "int", "float"]
+    },
+    "path": {
+      "call":     ["fs.readFile", "fs.readFileSync", "fs.createReadStream", "res.sendFile", "path.resolve"],
+      "accepts":  ["normalized-path", "basename-only"]
+    },
+    "redirect": {
+      "call":     ["redirect", "res.redirect"],
+      "accepts":  ["validated-url", "relative-path"]
+    },
+    "shell": {
+      "call":     ["child_process.exec", "child_process.execFile", "child_process.spawn", "exec", "execFile", "spawn"],
+      "accepts":  ["shell-quoted", "int", "float"]
     },
     "dom": {
       "property": [
@@ -40,6 +60,9 @@
     { "name": "encodeURI",             "removes": ["html", "ssrf"], "sets_state": "url-encoded" },
     { "name": "encodeURIComponent",    "removes": ["html", "ssrf"], "sets_state": "url-encoded" },
     { "name": "DOMPurify.sanitize",    "removes": ["html"], "sets_state": "html-encoded" },
+    { "name": "path.basename",         "removes": ["path"], "sets_state": "basename-only" },
+    { "name": "path.normalize",        "removes": ["path"], "sets_state": "normalized-path" },
+    { "name": "validator.isURL",       "removes": ["ssrf", "redirect"], "sets_state": "validated-url" },
     { "name": "parseInt",              "removes": ["sql", "html", "ssrf", "shell"], "sets_state": "int" },
     { "name": "parseFloat",            "removes": ["sql", "html", "ssrf"], "sets_state": "float" },
     { "name": "sanitize",              "removes": ["html"], "sets_state": "html-encoded" },
