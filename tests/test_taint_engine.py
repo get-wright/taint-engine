@@ -58,11 +58,7 @@ def test_kill_semantics_python():
         rules=RULES,
         parser=PARSER,
     )
-    assert flow is not None
-    assert any(
-        "hardcoded" in f.lower() or "no external" in f.lower()
-        for f in flow.confidence_factors
-    )
+    assert flow is None  # taint killed by reassignment to hardcoded value
 
 
 def test_kill_semantics_js():
@@ -75,11 +71,7 @@ def test_kill_semantics_js():
         rules=RULES,
         parser=PARSER,
     )
-    assert flow is not None
-    assert any(
-        "hardcoded" in f.lower() or "no external" in f.lower()
-        for f in flow.confidence_factors
-    )
+    assert flow is None  # taint killed by reassignment to hardcoded value
 
 
 # --- Branch merging ---
@@ -270,11 +262,7 @@ def test_field_safe_python():
         rules=RULES,
         parser=PARSER,
     )
-    assert flow is not None
-    assert any(
-        "hardcoded" in f.lower() or "no external" in f.lower()
-        for f in flow.confidence_factors
-    )
+    assert flow is None  # taint killed — sink reads from hardcoded field
 
 
 # --- Format string propagation ---
@@ -497,11 +485,8 @@ def test_source_false_positive_string():
         rules=RULES,
         parser=PARSER,
     )
-    assert flow is not None
-    assert flow.source.kind != "source", (
-        f"String literal should not match source 'request.args', "
-        f"got kind={flow.source.kind}"
-    )
+    # No taint flow — string literal is not a source, nothing traces back
+    assert flow is None or flow.source.kind != "source"
 
 
 def test_source_false_positive_validate_input():
@@ -515,11 +500,8 @@ def test_source_false_positive_validate_input():
         rules=RULES,
         parser=PARSER,
     )
-    assert flow is not None
-    assert flow.source.kind != "source", (
-        f"validate_input() should not match source 'input()', "
-        f"got kind={flow.source.kind}"
-    )
+    # No taint flow — validate_input() is not a source
+    assert flow is None or flow.source.kind != "source"
 
 
 # --- Keyword arg filtering ---
@@ -536,10 +518,8 @@ def test_keyword_arg_not_in_sink_vars():
         rules=RULES,
         parser=PARSER,
     )
-    assert flow is not None
-    assert flow.source.variable != "timeout", (
-        "keyword arg name 'timeout' should not be treated as a sink variable"
-    )
+    # No taint flow when only keyword arg names (not values) reach the sink
+    assert flow is None or flow.source.variable != "timeout"
 
 
 # --- Label detection and state checking ---

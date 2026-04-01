@@ -150,27 +150,7 @@ def trace_taint_flow(
                 and best_flow.source.kind not in ("parameter", "source")
             ):
                 best_flow = flow
-        else:
-            # No taint source found for this variable
-            if best_flow is None:
-                full_path = [
-                    FlowStep(
-                        variable=sink_var,
-                        line=sink_line,
-                        expression=sink_expr,
-                        kind="assignment",
-                    ),
-                    sink_step,
-                ]
-                best_flow = TaintFlow(
-                    path=full_path,
-                    sanitizers=state.sanitizers,
-                    guards=state.guards,
-                    unresolved_calls=state.unresolved,
-                    confidence_factors=["No external source — values appear hardcoded"],
-                    inferred=infer_sink_source(check_id, cwe_list, sink_expr),
-                    transformers=state.transformers,
-                )
+        # else: no taint source found for this variable — skip it
 
     if best_flow is not None:
         _apply_label_analysis(best_flow, active_label, rules, ext)
