@@ -9,7 +9,7 @@ from ..models import CrossFileHop, TaintFlow
 from ..resolver.index_store import IndexStore
 from ..resolver.js_resolver import JsResolver
 from ..resolver.python_resolver import PythonResolver
-from ..resolver.symbol_extractor import find_enclosing_function, find_symbols_at_line
+from ..resolver.symbol_extractor import find_enclosing_function
 from ..ts_parser import TreeSitterParser
 from .formatters.json_fmt import format_json
 from .formatters.sarif import format_sarif
@@ -168,12 +168,7 @@ def run_trace(args) -> int:
         return 1
 
     if args.symbol:
-        target_symbols = [args.symbol]
-    else:
-        syms_at_line = find_symbols_at_line(root, lang, ext, line=line_0)
-        target_symbols = (
-            [s.name for s in syms_at_line] if syms_at_line else [func_name]
-        )
+        func_name = args.symbol
 
     from .. import load_rules
 
@@ -201,20 +196,16 @@ def run_trace(args) -> int:
 
     label = getattr(args, "label", None)
 
-    flows: list[TaintFlow] = []
-    for _sym in target_symbols:
-        flow = trace_taint_flow(
-            file_path=file_path,
-            function_name=func_name,
-            sink_line=line,
-            check_id=check_id,
-            rules=rules,
-            parser=parser,
-            label=label,
-        )
-        if flow is not None:
-            flows.append(flow)
-            break
+    flow = trace_taint_flow(
+        file_path=file_path,
+        function_name=func_name,
+        sink_line=line,
+        check_id=check_id,
+        rules=rules,
+        parser=parser,
+        label=label,
+    )
+    flows: list[TaintFlow] = [flow] if flow is not None else []
 
     if args.cross_file and flows:
         store = IndexStore(args.db)
