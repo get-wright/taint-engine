@@ -12,22 +12,56 @@ from typing import Optional
 
 
 @dataclass(frozen=True)
+class Selector:
+    """A single step in an access path: field read, subscript, or call result."""
+
+    kind: str  # "field" | "subscript" | "call_result"
+    name: str  # field name, subscript key, or callee name
+
+
+@dataclass(frozen=True)
 class AccessPath:
-    """A variable path like 'obj.field' for field-sensitive taint tracking."""
+    """A variable path with structured selectors for field-sensitive tracking."""
 
     base: str
-    selectors: tuple[str, ...] = ()
+    selectors: tuple[Selector, ...] = ()
 
     @property
     def name(self) -> str:
-        if self.selectors:
-            return f"{self.base}.{'.'.join(self.selectors)}"
-        return self.base
+        parts = [self.base]
+        for sel in self.selectors:
+            if sel.kind == "field":
+                parts.append(f".{sel.name}")
+            elif sel.kind == "subscript":
+                parts.append(f'["{sel.name}"]')
+            elif sel.kind == "call_result":
+                parts.append(f".{sel.name}()")
+        return "".join(parts)
+
+    @classmethod
+    def from_identifier(cls, name: str) -> AccessPath:
+        return cls(base=name)
+
+    @classmethod
+    def from_dotted(cls, dotted: str) -> AccessPath:
+        parts = dotted.split(".")
+        if len(parts) == 1:
+            return cls(base=parts[0])
+        return cls(
+            base=parts[0],
+            selectors=tuple(Selector("field", p) for p in parts[1:]),
+        )
 
     def with_field(self, field_name: str) -> AccessPath:
-        if len(self.selectors) >= 2:
-            return self
-        return AccessPath(self.base, self.selectors + (field_name,))
+        return AccessPath(self.base, self.selectors + (Selector("field", field_name),))
+
+    def with_subscript(self, key: str) -> AccessPath:
+        return AccessPath(self.base, self.selectors + (Selector("subscript", key),))
+
+    def with_call_result(self, callee: str) -> AccessPath:
+        return AccessPath(
+            self.base, self.selectors + (Selector("call_result", callee),)
+        )
 
 
 @dataclass

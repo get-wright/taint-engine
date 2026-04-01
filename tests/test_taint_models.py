@@ -8,6 +8,7 @@ from taint_engine.models import (
     CrossFileHop,
     GuardInfo,
     AccessPath,
+    Selector,
     TransformerInfo,
 )
 
@@ -18,20 +19,13 @@ def test_access_path_simple():
 
 
 def test_access_path_dotted():
-    ap = AccessPath(base="obj", selectors=("field",))
+    ap = AccessPath.from_dotted("obj.field")
     assert ap.name == "obj.field"
 
 
 def test_access_path_with_field():
-    ap = AccessPath(base="obj", selectors=())
-    extended = ap.with_field("field")
-    assert extended.name == "obj.field"
-
-
-def test_access_path_depth_cap():
-    ap = AccessPath(base="a", selectors=("b", "c"))
-    capped = ap.with_field("d")
-    assert capped.name == "a.b.c"  # not extended beyond depth 2
+    ap = AccessPath.from_identifier("obj").with_field("field")
+    assert ap.name == "obj.field"
 
 
 def test_access_path_frozen():
@@ -192,7 +186,10 @@ def test_transformer_info_from_dict():
 
 def test_transformer_info_roundtrip():
     original = TransformerInfo(
-        name="url_decode", line=12, sets_state="url_decoded", discovery_order=3,
+        name="url_decode",
+        line=12,
+        sets_state="url_decoded",
+        discovery_order=3,
     )
     d = original.to_dict()
     restored = TransformerInfo.from_dict(d)
@@ -387,6 +384,67 @@ def test_taint_flow_from_dict_with_new_keys():
     assert len(flow.transformers) == 1
     assert flow.transformers[0].name == "json.loads"
     assert flow.final_state == "deserialized"
+
+
+# --- Selector and enhanced AccessPath tests ---
+
+
+def test_selector_frozen():
+    s = Selector("field", "args")
+    assert s.kind == "field"
+    assert s.name == "args"
+    try:
+        s.kind = "other"
+        assert False, "Should raise"
+    except AttributeError:
+        pass
+
+
+def test_access_path_from_identifier():
+    p = AccessPath.from_identifier("x")
+    assert p.base == "x"
+    assert p.selectors == ()
+    assert p.name == "x"
+
+
+def test_access_path_from_dotted():
+    p = AccessPath.from_dotted("request.args")
+    assert p.base == "request"
+    assert p.selectors == (Selector("field", "args"),)
+    assert p.name == "request.args"
+
+
+def test_access_path_from_dotted_single():
+    p = AccessPath.from_dotted("x")
+    assert p.base == "x"
+    assert p.selectors == ()
+
+
+def test_access_path_with_subscript():
+    p = AccessPath.from_dotted("request.args").with_subscript("next")
+    assert p.name == 'request.args["next"]'
+
+
+def test_access_path_with_call_result():
+    p = AccessPath.from_identifier("si").with_call_result("getvalue")
+    assert p.name == "si.getvalue()"
+
+
+def test_access_path_canonical_multi_selector():
+    p = AccessPath(
+        "request",
+        (
+            Selector("field", "args"),
+            Selector("subscript", "next"),
+        ),
+    )
+    assert p.name == 'request.args["next"]'
+
+
+def test_access_path_chained_fields():
+    p = AccessPath.from_identifier("req").with_field("body").with_field("email")
+    assert p.name == "req.body.email"
+    assert len(p.selectors) == 2
 
 
 from taint_engine.parser_protocol import ASTNode, LanguageGrammar, Parser

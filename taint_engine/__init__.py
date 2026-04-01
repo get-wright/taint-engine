@@ -13,6 +13,7 @@ from .models import (
     GuardInfo,
     InferredSinkSource,
     SanitizerInfo,
+    Selector,
     TaintFlow,
 )
 from .rules import TaintRuleSet, LanguageRules, load_rules
@@ -30,6 +31,7 @@ __all__ = [
     "load_rules",
     "Parser",
     "SanitizerInfo",
+    "Selector",
     "TaintFlow",
     "TaintRuleSet",
     "trace_taint_flow",
