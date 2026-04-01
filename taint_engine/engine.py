@@ -36,6 +36,7 @@ from .walker import (
     Definition,
     WalkState,
     walk_body,
+    _resolve_expression_path,
 )
 from .sink_source_inference import infer_sink_source
 
@@ -310,6 +311,52 @@ def _find_vars_at_line(
                 if dotted and dotted not in seen:
                     seen.add(dotted)
                     results.append((dotted, expr_text, callee or None))
+            elif arg_child.type in call_types:
+                # Call result as sink argument: si.getvalue(),
+                # request.args.get("next")
+                path = _resolve_expression_path(
+                    arg_child, grammar, rules, ext,
+                )
+                if path:
+                    key = path.name
+                    if key not in seen:
+                        seen.add(key)
+                        results.append(
+                            (key, expr_text, callee or None)
+                        )
+            elif arg_child.type in (
+                "binary_expression",
+                "boolean_operator",
+            ):
+                # Compound: a or b, a || b — decompose operands
+                for operand in arg_child.children:
+                    if not operand.is_named:
+                        continue
+                    if operand.type == "identifier":
+                        name = operand.text.decode()
+                        if name not in seen:
+                            seen.add(name)
+                            results.append(
+                                (name, expr_text, callee or None)
+                            )
+                    elif operand.type in member_types:
+                        dotted = _reconstruct_dotted(operand)
+                        if dotted and dotted not in seen:
+                            seen.add(dotted)
+                            results.append(
+                                (dotted, expr_text, callee or None)
+                            )
+                    elif operand.type in call_types:
+                        path = _resolve_expression_path(
+                            operand, grammar, rules, ext,
+                        )
+                        if path:
+                            key = path.name
+                            if key not in seen:
+                                seen.add(key)
+                                results.append(
+                                    (key, expr_text, callee or None)
+                                )
 
     if results:
         return results

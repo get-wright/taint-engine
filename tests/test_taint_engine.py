@@ -716,3 +716,50 @@ def test_augmented_assignment_flow():
     assert len(flow.path) >= 3, (
         f"Expected >=3 steps (param->assignment->sink), got {len(flow.path)}"
     )
+
+
+# --- Source recovery ---
+
+
+def test_accessor_source_recovery():
+    flow = trace_taint_flow(
+        file_path=os.path.join(FIXTURES, "taint_source_recovery.py"),
+        function_name="accessor_source",
+        sink_line=6,
+        check_id="python.redirect",
+        cwe_list=["CWE-601"],
+        rules=RULES,
+        parser=PARSER,
+    )
+    assert flow is not None
+    assert flow.source.kind in ("source", "parameter")
+    assert "request" in flow.source.variable or "request" in flow.source.expression
+
+
+def test_member_read_source_recovery():
+    flow = trace_taint_flow(
+        file_path=os.path.join(FIXTURES, "taint_source_recovery.py"),
+        function_name="member_read_source",
+        sink_line=11,
+        check_id="python.redirect",
+        cwe_list=["CWE-601"],
+        rules=RULES,
+        parser=PARSER,
+    )
+    assert flow is not None
+    assert flow.source.kind in ("source", "parameter")
+
+
+def test_alias_chain_recovery():
+    flow = trace_taint_flow(
+        file_path=os.path.join(FIXTURES, "taint_source_recovery.py"),
+        function_name="alias_chain",
+        sink_line=25,
+        check_id="python.sqli",
+        cwe_list=["CWE-89"],
+        rules=RULES,
+        parser=PARSER,
+    )
+    assert flow is not None
+    assert flow.source.kind in ("source", "parameter")
+    assert not any("hardcoded" in f.lower() for f in flow.confidence_factors)
