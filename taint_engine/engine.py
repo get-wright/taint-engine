@@ -17,6 +17,7 @@ from .models import (
     FlowStep,
     GuardInfo,
     SanitizerInfo,
+    Selector,
     TaintFlow,
     InferredSinkSource,
 )
@@ -613,6 +614,50 @@ def _is_source_in_node(source: str, node: object | None, expr: str) -> bool:
 
     pattern = r"\b" + re.escape(source_name) + r"\b"
     return bool(re.search(pattern, expr))
+
+
+def _match_source_by_path(
+    source: str,
+    resolved_base: str,
+    effective_selectors: tuple[Selector, ...],
+) -> bool:
+    """Check if a rule source matches via access path prefix.
+
+    Reconstructs the effective path from the resolved base + accumulated
+    selectors and checks if any rule source is a prefix.
+    """
+    is_call_source = source.endswith("()")
+    source_name = source.rstrip("()")
+
+    # Build effective dotted path (field selectors only — for prefix matching)
+    dotted_parts = [resolved_base]
+    for sel in effective_selectors:
+        if sel.kind == "field":
+            dotted_parts.append(f".{sel.name}")
+    dotted_path = "".join(dotted_parts)
+
+    if dotted_path.startswith(source_name) or source_name.startswith(dotted_path):
+        if is_call_source:
+            return any(s.kind == "call_result" for s in effective_selectors)
+        return True
+
+    # Also check full canonical path with subscripts
+    full_parts = [resolved_base]
+    for sel in effective_selectors:
+        if sel.kind == "field":
+            full_parts.append(f".{sel.name}")
+        elif sel.kind == "subscript":
+            full_parts.append(f'["{sel.name}"]')
+        elif sel.kind == "call_result":
+            full_parts.append(f".{sel.name}()")
+    full_path = "".join(full_parts)
+
+    if full_path.startswith(source_name) or source_name.startswith(full_path):
+        if is_call_source:
+            return any(s.kind == "call_result" for s in effective_selectors)
+        return True
+
+    return False
 
 
 # ---------------------------------------------------------------------------

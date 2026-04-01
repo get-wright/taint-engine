@@ -72,6 +72,37 @@ class ActiveDefs:
         """Which definitions of var are currently active?"""
         return self.defs.get(var, set())
 
+    def reaching_path(
+        self,
+        path: AccessPath,
+    ) -> tuple[set[Definition], tuple[Selector, ...]]:
+        """Look up definitions by AccessPath with prefix fallback.
+
+        Returns (matching_defs, remaining_selectors). Tries exact key first,
+        then progressively shorter prefixes by dropping trailing selectors.
+        """
+        # Exact match
+        defs = self.defs.get(path.name)
+        if defs:
+            return (defs, ())
+
+        # Progressive prefix: drop selectors from the end
+        current = path
+        remaining: list[Selector] = []
+        while current.selectors:
+            remaining.insert(0, current.selectors[-1])
+            current = AccessPath(current.base, current.selectors[:-1])
+            defs = self.defs.get(current.name)
+            if defs:
+                return (defs, tuple(remaining))
+
+        # Try bare base
+        defs = self.defs.get(current.base)
+        if defs:
+            return (defs, tuple(remaining))
+
+        return (set(), ())
+
 
 @dataclass
 class WalkState:
